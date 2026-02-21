@@ -1,0 +1,12 @@
+[requires]
+boost/1.82.0
+openssl/3.1.4@conan/stable
+zlib/1.2.13#abc123def456
+nlohmann_json/3.11.2
+
+[build_requires]
+cmake/3.25.0
+ninja/1.11.1
+
+[generators]
+cmake

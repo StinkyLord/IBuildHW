@@ -1,0 +1,12 @@
+[
+  {
+    "directory": "/tmp/build",
+    "command": "g++ -I/usr/local/include/boost_1_82_0 -I/usr/include/openssl -I/home/user/project/src -c /home/user/project/src/main.cpp -o main.o",
+    "file": "/home/user/project/src/main.cpp"
+  },
+  {
+    "directory": "/tmp/build",
+    "command": "g++ -I/opt/local/include/zlib-1.2.13 -I/home/user/project/include -c /home/user/project/src/utils.cpp -o utils.o",
+    "file": "/home/user/project/src/utils.cpp"
+  }
+]

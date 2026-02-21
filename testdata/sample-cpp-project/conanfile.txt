@@ -1,0 +1,8 @@
+[requires]
+boost/1.82.0
+openssl/3.1.4
+zlib/1.2.13
+nlohmann_json/3.11.2
+
+[generators]
+cmake
