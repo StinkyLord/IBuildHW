@@ -12,7 +12,8 @@ Output is a valid **CycloneDX 1.4 JSON** SBOM.
 
 - [How It Works](#how-it-works)
 - [Detection Strategies](#detection-strategies)
-- [Installation](#installation)
+- [Running with Docker (Recommended)](#running-with-docker-recommended)
+- [Installation (Local Build)](#installation-local-build)
 - [Running Locally](#running-locally)
 - [Executing Against a Sample Project](#executing-against-a-sample-project)
 - [Running the Test Suite](#running-the-test-suite)
@@ -93,7 +94,138 @@ Versions are detected from (in priority order):
 
 ---
 
-## Installation
+---
+
+## Running with Docker (Recommended)
+
+The easiest way to use `cpp-sbom-builder` is via the pre-built Docker image. The image contains **all required tools pre-installed** — Python, Conan, CMake, GCC, Clang, binutils (`nm`, `objdump`, `readelf`, `ldd`) — so you need **nothing on your machine except Docker**.
+
+Your project directory is mounted **read-only**. Nothing is installed on your machine.
+
+### Quick start
+
+```bash
+# Pull the image
+docker pull philip-abed-docker/cpp-sbom-builder:latest
+
+# Scan a project — output goes to ./sbom.json
+docker run --rm \
+  -v /path/to/my/cpp/project:/project:ro \
+  -v $(pwd):/output \
+  philip-abed-docker/cpp-sbom-builder:latest \
+  scan --dir /project --output /output/sbom.json
+```
+
+On Windows (PowerShell):
+```powershell
+docker run --rm `
+  -v C:\path\to\my\project:/project:ro `
+  -v ${PWD}:/output `
+  philip-abed-docker/cpp-sbom-builder:latest `
+  scan --dir /project --output /output/sbom.json
+```
+
+### With Conan graph resolution
+
+```bash
+docker run --rm \
+  -v /path/to/my/project:/project:ro \
+  -v $(pwd):/output \
+  philip-abed-docker/cpp-sbom-builder:latest \
+  scan --dir /project --conan-graph --output /output/sbom.json
+```
+
+When `--conan-graph` is passed, the entrypoint automatically:
+1. Runs `conan install` to resolve all dependencies
+2. Runs `conan graph info . --format=json` to produce the full dependency tree
+3. Passes the result to the scanner
+
+### With CMake configure (MAP-equivalent linker data)
+
+```bash
+docker run --rm \
+  -v /path/to/my/project:/project:ro \
+  -v $(pwd):/output \
+  philip-abed-docker/cpp-sbom-builder:latest \
+  scan --dir /project --cmake-configure --output /output/sbom.json
+```
+
+When `--cmake-configure` is passed, the entrypoint runs:
+```
+cmake -S /project -B /tmp/build -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+```
+This is a **configure-only step** (no compilation). It generates:
+- `compile_commands.json` — all `-I` include paths and compiler flags
+- `CMakeFiles/*/link.txt` — the full linker command line for each target
+
+The `link.txt` files are the **closest equivalent to linker MAP files** that can be produced without a full build. They contain every `-l` flag and library path the linker would use.
+
+### With LDD runtime dependency analysis
+
+```bash
+docker run --rm \
+  -v /path/to/my/project:/project:ro \
+  -v $(pwd):/output \
+  philip-abed-docker/cpp-sbom-builder:latest \
+  scan --dir /project --ldd --output /output/sbom.json
+```
+
+When `--ldd` is passed, the entrypoint runs `ldd` on every `.so` file found in the project, producing the full **transitive runtime dependency tree**. This is richer than a linker MAP file because it shows the actual resolved runtime dependencies.
+
+### Full scan (all strategies)
+
+```bash
+docker run --rm \
+  -v /path/to/my/project:/project:ro \
+  -v $(pwd):/output \
+  philip-abed-docker/cpp-sbom-builder:latest \
+  scan --dir /project \
+       --conan-graph \
+       --cmake-configure \
+       --ldd \
+       --output /output/sbom.json \
+       --show-strategies \
+       --verbose
+```
+
+### Using docker-compose
+
+```bash
+# Clone the repo to get docker-compose.yml
+git clone https://github.com/StinkyLord/IBuildHW.git
+cd IBuildHW
+
+# Scan a project
+PROJECT_DIR=/path/to/my/project docker compose run --rm sbom-builder
+
+# With all strategies
+PROJECT_DIR=/path/to/my/project \
+SBOM_CONAN_GRAPH=1 \
+SBOM_CMAKE_CONFIGURE=1 \
+SBOM_LDD=1 \
+docker compose run --rm sbom-builder
+```
+
+### Environment variables (alternative to flags)
+
+| Variable | Flag equivalent | Default |
+|---|---|---|
+| `SBOM_CONAN_GRAPH=1` | `--conan-graph` | `0` |
+| `SBOM_CMAKE_CONFIGURE=1` | `--cmake-configure` | `0` |
+| `SBOM_LDD=1` | `--ldd` | `0` |
+| `SBOM_VERBOSE=1` | `--verbose` | `0` |
+
+### Building the image locally
+
+```bash
+git clone https://github.com/StinkyLord/IBuildHW.git
+cd IBuildHW
+docker build -t philip-abed-docker/cpp-sbom-builder:latest .
+```
+
+---
+
+## Installation (Local Build)
 
 ### Prerequisites
 
@@ -160,8 +292,10 @@ go install github.com/StinkyLord/cpp-sbom-builder@latest
 | `--format` | `-f` | `cyclonedx` | Output format (`cyclonedx`) |
 | `--verbose` | `-v` | `false` | Verbose logging |
 | `--show-strategies` | | `false` | Print strategy summary |
-| `--conan-graph` | | `false` | Run `conan graph info` in Docker for full Conan dependency tree |
-| `--conan-image` | | `conanio/conan:latest` | Docker image to use with `--conan-graph` |
+| `--conan-graph` | | `false` | Run `conan graph info` (inside Docker image) for full Conan dependency tree |
+| `--conan-image` | | `conanio/conan:latest` | Docker image to use with `--conan-graph` (standalone mode only) |
+| `--cmake-configure` | | `false` | Run cmake configure-only to generate `compile_commands.json` + `link.txt` (MAP equivalent) |
+| `--ldd` | | `false` | Run `ldd` on `.so` files for runtime dependency edges (Linux/Docker only) |
 
 ---
 

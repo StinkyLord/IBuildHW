@@ -1,0 +1,45 @@
+# docker-compose.yml
+#
+# Convenience wrapper for cpp-sbom-builder.
+#
+# Usage:
+#   docker compose run --rm sbom-builder
+#
+# Or with extra flags:
+#   docker compose run --rm sbom-builder scan --dir /project --conan-graph --cmake-configure --ldd --output /output/sbom.json
+#
+# Set the PROJECT_DIR environment variable to point at your C++ project:
+#   PROJECT_DIR=/path/to/my/project docker compose run --rm sbom-builder
+#
+# Output is written to ./sbom-output/ in the current directory.
+
+services:
+  sbom-builder:
+    image: philip-abed-docker/cpp-sbom-builder:latest
+    # Build locally if the image is not yet on DockerHub:
+    # build:
+    #   context: .
+    #   dockerfile: Dockerfile
+
+    volumes:
+      # Mount the C++ project read-only (default: current directory)
+      - "${PROJECT_DIR:-.}:/project:ro"
+      # Output directory — SBOM JSON is written here
+      - "${OUTPUT_DIR:-./sbom-output}:/output"
+
+    environment:
+      # Set to 1 to enable pre-scan steps without passing flags
+      - SBOM_CMAKE_CONFIGURE=${SBOM_CMAKE_CONFIGURE:-0}
+      - SBOM_CONAN_GRAPH=${SBOM_CONAN_GRAPH:-0}
+      - SBOM_LDD=${SBOM_LDD:-0}
+      - SBOM_VERBOSE=${SBOM_VERBOSE:-0}
+
+    # Default command: scan /project, write to /output/sbom.json
+    command: >
+      scan
+      --dir /project
+      --output /output/sbom.json
+      --show-strategies
+
+    # Remove the container after it exits
+    restart: "no"

@@ -21,6 +21,8 @@ var (
 	flagShowStrategies bool
 	flagConanGraph     bool
 	flagConanImage     string
+	flagCMakeConfigure bool
+	flagLdd            bool
 )
 
 var rootCmd = &cobra.Command{
@@ -66,6 +68,14 @@ func init() {
 			"project root it is used directly without running Docker.")
 	scanCmd.Flags().StringVar(&flagConanImage, "conan-image", "conanio/conan:latest",
 		"Docker image to use when --conan-graph is set (must have conan pre-installed)")
+	scanCmd.Flags().BoolVar(&flagCMakeConfigure, "cmake-configure", false,
+		"Run cmake configure-only step to generate compile_commands.json and link.txt files.\n"+
+			"Requires cmake on the host (or use inside the Docker image).\n"+
+			"link.txt files are the closest equivalent to linker MAP files without a full build.")
+	scanCmd.Flags().BoolVar(&flagLdd, "ldd", false,
+		"Run ldd on .so files found in the project to extract runtime dependency edges.\n"+
+			"Linux only. Designed to run inside the Docker image.\n"+
+			"Reads ldd-results.json if pre-generated, or the SBOM_LDD_RESULTS env var.")
 
 	rootCmd.AddCommand(scanCmd)
 }
@@ -98,6 +108,8 @@ func runScan(cmd *cobra.Command, args []string) error {
 	s := scanner.New(absDir, flagVerbose)
 	s.ConanGraph = flagConanGraph
 	s.ConanDockerImage = flagConanImage
+	s.CMakeConfigure = flagCMakeConfigure
+	s.UseLdd = flagLdd
 	result, err := s.Scan()
 	if err != nil {
 		return fmt.Errorf("scan failed: %w", err)

@@ -38,6 +38,16 @@ type Scanner struct {
 	// ConanDockerImage overrides the Docker image used for conan graph info.
 	// Defaults to "conanio/conan:latest".
 	ConanDockerImage string
+
+	// CMakeConfigure enables the cmake-configure strategy.
+	// When true the strategy runs cmake configure-only to generate
+	// compile_commands.json and link.txt files (MAP equivalent).
+	CMakeConfigure bool
+
+	// UseLdd enables the ldd strategy.
+	// When true the strategy reads ldd-results.json (produced by the Docker
+	// entrypoint) to extract runtime dependency edges from .so files.
+	UseLdd bool
 }
 
 // New creates a Scanner.
@@ -100,7 +110,17 @@ func (s *Scanner) Scan() (*Result, error) {
 		&strategies.HeadersStrategy{},
 	}
 
-	resultCh := make(chan stratResult, len(otherStrategies)+3)
+	// Optional strategies activated by flags
+	if s.CMakeConfigure {
+		otherStrategies = append(otherStrategies, &strategies.CMakeConfigureStrategy{})
+	}
+
+	// Channel capacity: base strategies + 3 edge strategies + optional ldd
+	capacity := len(otherStrategies) + 3
+	if s.UseLdd {
+		capacity++
+	}
+	resultCh := make(chan stratResult, capacity)
 	var wg sync.WaitGroup
 
 	// Submit active conan results
@@ -144,6 +164,23 @@ func (s *Scanner) Scan() (*Result, error) {
 			comps, err := st.Scan(s.ProjectRoot, s.Verbose)
 			resultCh <- stratResult{name: st.Name(), components: comps, err: err}
 		}(strat)
+	}
+
+	// LDD strategy: run synchronously here so we can also capture edges,
+	// then submit the components to the channel before closing it.
+	var lddEdges map[string][]string
+	if s.UseLdd {
+		lddStrat := &strategies.LddStrategy{}
+		lddResult := lddStrat.ScanWithEdges(s.ProjectRoot, s.Verbose)
+		lddEdges = lddResult.Edges
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			resultCh <- stratResult{
+				name:       lddStrat.Name(),
+				components: lddResult.Components,
+			}
+		}()
 	}
 
 	go func() {
@@ -251,6 +288,9 @@ func (s *Scanner) Scan() (*Result, error) {
 	mergeEdges(activeConanResult.Edges)
 	mergeEdges(linkerMapResult.Edges)
 	mergeEdges(binaryEdgesResult.Edges)
+	if lddEdges != nil {
+		mergeEdges(lddEdges)
+	}
 
 	// Step 2: Apply IsDirect and Dependencies to each merged component
 	for _, c := range allComponents {
