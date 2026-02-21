@@ -57,7 +57,7 @@ Examples:
 func init() {
 	scanCmd.Flags().StringVarP(&flagDir, "dir", "d", ".", "Path to the C++ project root directory")
 	scanCmd.Flags().StringVarP(&flagOutput, "output", "o", "sbom.json", "Output file path (use '-' for stdout)")
-	scanCmd.Flags().StringVarP(&flagFormat, "format", "f", "cyclonedx", "Output format: cyclonedx")
+	scanCmd.Flags().StringVarP(&flagFormat, "format", "f", "cyclonedx", "Output format: cyclonedx, deptree")
 	scanCmd.Flags().BoolVarP(&flagVerbose, "verbose", "v", false, "Enable verbose output")
 	scanCmd.Flags().BoolVar(&flagShowStrategies, "show-strategies", false, "Print which strategies fired after scanning")
 	scanCmd.Flags().BoolVar(&flagConanGraph, "conan-graph", false,
@@ -128,8 +128,12 @@ func runScan(cmd *cobra.Command, args []string) error {
 		if err := output.WriteCycloneDX(result, flagOutput, toolVersion); err != nil {
 			return fmt.Errorf("failed to write CycloneDX output: %w", err)
 		}
+	case "deptree", "tree":
+		if err := output.WriteDependencyTree(result, flagOutput); err != nil {
+			return fmt.Errorf("failed to write dependency tree output: %w", err)
+		}
 	default:
-		return fmt.Errorf("unsupported format %q (supported: cyclonedx)", flagFormat)
+		return fmt.Errorf("unsupported format %q (supported: cyclonedx, deptree)", flagFormat)
 	}
 
 	if flagOutput != "-" {

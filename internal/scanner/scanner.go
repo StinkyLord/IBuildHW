@@ -290,12 +290,9 @@ func (s *Scanner) Scan() (*Result, error) {
 		mergeEdges(lddEdges)
 	}
 
-	// Step 2: Apply IsDirect and Dependencies to each merged component
+	// Step 2: Apply Dependencies to each merged component (from all edge sources).
 	for _, c := range allComponents {
 		key := normalizeName(c.Name)
-		c.IsDirect = allDirectNames[key]
-
-		// Populate children from all edge sources
 		if children, ok := allEdges[key]; ok {
 			for _, child := range children {
 				c.Dependencies = appendUniqueStr(c.Dependencies, child)
@@ -303,7 +300,28 @@ func (s *Scanner) Scan() (*Result, error) {
 		}
 	}
 
-	// Step 3: Build the DependencyTree
+	// Step 3: Determine which components are referenced as children by any other component.
+	// Any component that is NOT a child of anything else is a root (direct) dependency —
+	// regardless of which strategy detected it. This makes the tree generic and correct
+	// for all strategies (linker-map, ldd, binary-edges, etc.).
+	referencedAsChild := map[string]bool{}
+	for _, c := range allComponents {
+		for _, childName := range c.Dependencies {
+			referencedAsChild[normalizeName(childName)] = true
+		}
+	}
+
+	// Step 4: Mark IsDirect.
+	// A component is direct if:
+	//   a) It is explicitly listed in a manifest/build-system strategy (allDirectNames), OR
+	//   b) It is not referenced as a child by any other component in the graph
+	//      (i.e. nothing depends on it → it must be a root dependency of the project).
+	for _, c := range allComponents {
+		key := normalizeName(c.Name)
+		c.IsDirect = allDirectNames[key] || !referencedAsChild[key]
+	}
+
+	// Step 5: Build the DependencyTree
 	tree := model.BuildDependencyTree(allComponents)
 
 	return &Result{

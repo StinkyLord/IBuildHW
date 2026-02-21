@@ -37,16 +37,30 @@ type LinkerMapResult struct {
 // reMapLibEntry matches library paths in MSVC and GNU map files.
 // MSVC format: lines containing .lib paths
 // GNU format:  LOAD /path/to/libfoo.a  or  /path/to/libfoo.so
+//
+// NOTE: Cross-compile map files (e.g. ARM GCC on Windows) use mixed separators:
+//
+//	LOAD c:/path/to/nofp\libgcc.a
+//
+// The path ends with a backslash-separated filename, so we must allow [^\s]+ to
+// match backslashes inside the path.
 var reMapLibEntry = regexp.MustCompile(`(?i)(?:LOAD\s+|^\s*)([A-Za-z]:[\\\/][^\s]+\.(?:lib|a|so(?:\.\d+)*)|\/[^\s]+\.(?:lib|a|so(?:\.\d+)*))`)
 
 // reMSVCLibLine matches lines in MSVC map files that reference .lib files
 var reMSVCLibLine = regexp.MustCompile(`(?i)([A-Za-z]:[\\\/][^\s"]+\.lib|[^\s"]+\.lib)`)
 
-// reSatisfyRef matches the GNU linker "satisfy reference" lines:
+// reSatisfyRef matches the GNU linker "satisfy reference" lines (single-line format):
 //
 //	/path/to/libchild.so    (/path/to/libparent.so(symbol))
 //	/path/to/libchild.a(obj.o)    (libparent.so(symbol))
 var reSatisfyRef = regexp.MustCompile(`^\s*([^\s(]+(?:\.(?:so|a|lib)(?:\.\d+)*)?)(?:\([^)]*\))?\s+\(([^\s(]+(?:\.(?:so|a|lib)(?:\.\d+)*)?)`)
+
+// reSatisfyChildLine matches the first line of a two-line satisfy entry (GNU ARM format):
+//
+//	c:/path/to\libgcc.a(_arm_addsubsf3.o)
+//
+// Captures the library path (everything up to the opening paren of the object member).
+var reSatisfyChildLine = regexp.MustCompile(`(?i)^([A-Za-z]:[\\\/][^\s(]+\.(?:lib|a|so(?:\.\d+)*))\(`)
 
 func (s *LinkerMapStrategy) Scan(projectRoot string, verbose bool) ([]*model.Component, error) {
 	r := s.ScanWithEdges(projectRoot, verbose)
@@ -150,6 +164,12 @@ func (s *LinkerMapStrategy) parseMapFile(
 	// State machine: track whether we are inside the "satisfy reference" section
 	inSatisfySection := false
 
+	// Two-line satisfy format (GNU ARM cross-compile):
+	//   Line 1 (child):  c:/path/to\libgcc.a(_arm_addsubsf3.o)
+	//   Line 2 (parent): <whitespace>build/vddcheck.o (__aeabi_fsub)
+	// We remember the child path from line 1 and pair it with the parent on line 2.
+	pendingSatisfyChild := ""
+
 	scanner := bufio.NewScanner(f)
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -157,31 +177,77 @@ func (s *LinkerMapStrategy) parseMapFile(
 		// Detect the GNU "Archive member included to satisfy reference" section header
 		if strings.Contains(line, "Archive member included") && strings.Contains(line, "satisfy") {
 			inSatisfySection = true
+			pendingSatisfyChild = ""
 			continue
 		}
-		// The satisfy section ends at the next blank line followed by a non-indented line
-		// (heuristic: if we see a line that starts with a non-space and doesn't look like
-		// a library path, we've left the section)
+
 		if inSatisfySection {
 			trimmed := strings.TrimSpace(line)
 			if trimmed == "" {
-				// blank line — stay in section, next line will tell us
+				// blank line — stay in section
 				continue
 			}
-			// If the line matches the satisfy reference pattern, parse it
+
+			// ── Two-line format (GNU ARM cross-compile) ──────────────────────────
+			// Line 1: the child library path followed by (object.o)
+			//   c:/path/to\libgcc.a(_arm_addsubsf3.o)
+			if pendingSatisfyChild == "" {
+				if m := reSatisfyChildLine.FindStringSubmatch(line); m != nil {
+					pendingSatisfyChild = filepath.ToSlash(m[1])
+					// Also record the child as an external lib path
+					if isExternalLibPath(pendingSatisfyChild, projectRoot) {
+						externalLibPaths[pendingSatisfyChild] = true
+					}
+					continue
+				}
+			} else {
+				// Line 2: the parent (requester) — indented, e.g.:
+				//   "                              build/vddcheck.o (__aeabi_fsub)"
+				// or another library path (lib-to-lib dependency):
+				//   "                              c:/path/to\libgcc.a(_aeabi_uldivmod.o) (__udivmoddi4)"
+				childPath := pendingSatisfyChild
+				pendingSatisfyChild = ""
+
+				// Extract the parent path from the indented line.
+				// It may be a project-local file (build/foo.o) or another library.
+				parentPath := ""
+				if pm := reSatisfyChildLine.FindStringSubmatch(trimmed); pm != nil {
+					// Parent is also an external library
+					parentPath = filepath.ToSlash(pm[1])
+					if isExternalLibPath(parentPath, projectRoot) {
+						externalLibPaths[parentPath] = true
+					}
+				}
+				// else: parent is a local object file — we still record the child
+
+				// Record edge if both are known packages
+				childPkg := libNameToPackage(filepath.Base(childPath))
+				if parentPath != "" {
+					parentPkg := libNameToPackage(filepath.Base(parentPath))
+					if childPkg != nil && parentPkg != nil && childPkg.Name != parentPkg.Name {
+						if verbose {
+							fmt.Printf("  [linker-map] edge: %s → %s (satisfy reference)\n",
+								parentPkg.Name, childPkg.Name)
+						}
+						edges[parentPkg.Name] = appendUnique(edges[parentPkg.Name], childPkg.Name)
+					}
+				}
+				continue
+			}
+
+			// ── Single-line format (standard GNU ld) ─────────────────────────────
+			// /path/to/libchild.so    (/path/to/libparent.so(symbol))
 			if m := reSatisfyRef.FindStringSubmatch(line); m != nil {
 				childPath := strings.TrimSpace(m[1])
 				parentPath := strings.TrimSpace(m[2])
 
-				// Record both as external lib paths
-				if isExternalPath(childPath, projectRoot) {
+				if isExternalLibPath(childPath, projectRoot) {
 					externalLibPaths[filepath.ToSlash(childPath)] = true
 				}
-				if isExternalPath(parentPath, projectRoot) {
+				if isExternalLibPath(parentPath, projectRoot) {
 					externalLibPaths[filepath.ToSlash(parentPath)] = true
 				}
 
-				// Map to package names and record the edge
 				childPkg := libNameToPackage(filepath.Base(childPath))
 				parentPkg := libNameToPackage(filepath.Base(parentPath))
 				if childPkg != nil && parentPkg != nil && childPkg.Name != parentPkg.Name {
@@ -193,24 +259,56 @@ func (s *LinkerMapStrategy) parseMapFile(
 				}
 				continue
 			}
+
 			// If the line doesn't look like a library path, we've left the section
-			if !strings.HasPrefix(trimmed, "/") && !strings.Contains(trimmed, ":\\") {
+			if !strings.HasPrefix(trimmed, "/") && !strings.Contains(trimmed, ":\\") && !strings.Contains(trimmed, ":/") {
 				inSatisfySection = false
+				pendingSatisfyChild = ""
 			}
 		}
 
-		// Always collect library paths regardless of section
+		// Always collect library paths from LOAD lines and other references
 		if m := reMapLibEntry.FindStringSubmatch(line); m != nil {
 			libPath := m[1]
-			if isExternalPath(libPath, projectRoot) {
+			if isExternalLibPath(libPath, projectRoot) {
 				externalLibPaths[filepath.ToSlash(libPath)] = true
 			}
 		}
 		for _, m := range reMSVCLibLine.FindAllStringSubmatch(line, -1) {
 			libPath := m[1]
-			if isExternalPath(libPath, projectRoot) {
+			if isExternalLibPath(libPath, projectRoot) {
 				externalLibPaths[filepath.ToSlash(libPath)] = true
 			}
 		}
 	}
+}
+
+// isExternalLibPath returns true if the given library path is outside the project root.
+// Unlike isExternalPath (which uses filepath.Abs and resolves ".." segments), this
+// function handles cross-compile paths that contain ".." and mixed separators, e.g.:
+//
+//	c:/siliconlabs/.../bin/../lib/gcc/arm-none-eabi/10.3.1/../../../../arm-none-eabi/lib/...
+//
+// For such paths we simply check whether the path is absolute and does NOT start with
+// the project root (after normalising separators and case).
+func isExternalLibPath(path, projectRoot string) bool {
+	if path == "" {
+		return false
+	}
+	// Normalise to forward slashes and lowercase for comparison
+	normPath := strings.ToLower(filepath.ToSlash(path))
+	normRoot := strings.ToLower(filepath.ToSlash(projectRoot))
+	// Ensure root ends with slash for prefix matching
+	if !strings.HasSuffix(normRoot, "/") {
+		normRoot += "/"
+	}
+
+	// If the path is absolute (starts with drive letter or /) and does not
+	// start with the project root, it is external.
+	isAbs := filepath.IsAbs(path) ||
+		(len(path) >= 3 && path[1] == ':' && (path[2] == '/' || path[2] == '\\'))
+	if !isAbs {
+		return false
+	}
+	return !strings.HasPrefix(normPath, normRoot)
 }

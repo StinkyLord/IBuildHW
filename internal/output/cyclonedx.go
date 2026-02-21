@@ -236,7 +236,7 @@ func modelNodeToCDX(n *model.TreeNode) *cdxTreeNode {
 		Name:    n.Name,
 		Version: n.Version,
 		PURL:    n.PURL,
-		Direct:  n.IsDirect,
+		Direct:  n.DependencyType == "direct",
 	}
 	for _, child := range n.Children {
 		node.Children = append(node.Children, modelNodeToCDX(child))

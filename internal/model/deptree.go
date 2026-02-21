@@ -6,16 +6,25 @@ import "sort"
 // Each node carries its full subtree of children inline — like npm's
 // package-lock.json — so the tree can be rendered at any depth.
 //
+// All component metadata (detection source, include paths, link libraries, etc.)
+// is embedded directly in each node so the tree is self-contained.
+//
 // Example:
 //
 //	X@1 -> children: [A@1 -> children: [B@1]]
 //	Y@1 -> children: [C@1 -> children: [A@1 -> children: [B@1]]]
 type TreeNode struct {
-	Name     string      `json:"name"`
-	Version  string      `json:"version"`
-	PURL     string      `json:"purl,omitempty"`
-	IsDirect bool        `json:"direct"`
-	Children []*TreeNode `json:"children,omitempty"`
+	Name            string      `json:"name"`
+	Version         string      `json:"version"`
+	PURL            string      `json:"purl,omitempty"`
+	DependencyType  string      `json:"dependencyType"` // "direct" or "transitive"
+	Description     string      `json:"description,omitempty"`
+	DetectionSource string      `json:"detectionSource,omitempty"`
+	Revision        string      `json:"revision,omitempty"`
+	Channel         string      `json:"channel,omitempty"`
+	IncludePaths    []string    `json:"includePaths,omitempty"`
+	LinkLibraries   []string    `json:"linkLibraries,omitempty"`
+	Children        []*TreeNode `json:"children,omitempty"`
 }
 
 // DependencyTree holds the full dependency hierarchy for a scanned project.
@@ -84,11 +93,22 @@ func (t *DependencyTree) buildRecursiveTree() []*TreeNode {
 // ancestors is the set of component keys on the current path from the root —
 // used to detect and break cycles.
 func (t *DependencyTree) buildNode(c *Component, ancestors map[string]bool) *TreeNode {
+	depType := "transitive"
+	if c.IsDirect {
+		depType = "direct"
+	}
+
 	node := &TreeNode{
-		Name:     c.Name,
-		Version:  c.Version,
-		PURL:     c.PURL,
-		IsDirect: c.IsDirect,
+		Name:            c.Name,
+		Version:         c.Version,
+		PURL:            c.PURL,
+		DependencyType:  depType,
+		Description:     c.Description,
+		DetectionSource: c.DetectionSource,
+		Revision:        c.Revision,
+		Channel:         c.Channel,
+		IncludePaths:    c.IncludePaths,
+		LinkLibraries:   c.LinkLibraries,
 	}
 
 	// Mark this node as an ancestor for the current path
@@ -107,9 +127,10 @@ func (t *DependencyTree) buildNode(c *Component, ancestors map[string]bool) *Tre
 			// Referenced in an edge but not in the component list —
 			// emit a placeholder leaf node
 			node.Children = append(node.Children, &TreeNode{
-				Name:    childName,
-				Version: "unknown",
-				PURL:    "pkg:generic/" + childName,
+				Name:           childName,
+				Version:        "unknown",
+				PURL:           "pkg:generic/" + childName,
+				DependencyType: "transitive",
 			})
 			continue
 		}
@@ -117,10 +138,21 @@ func (t *DependencyTree) buildNode(c *Component, ancestors map[string]bool) *Tre
 		childKey := childComp.Key()
 		if ancestors[childKey] {
 			// Cycle detected — emit as a leaf to break the cycle
+			childDepType := "transitive"
+			if childComp.IsDirect {
+				childDepType = "direct"
+			}
 			node.Children = append(node.Children, &TreeNode{
-				Name:    childComp.Name,
-				Version: childComp.Version,
-				PURL:    childComp.PURL,
+				Name:            childComp.Name,
+				Version:         childComp.Version,
+				PURL:            childComp.PURL,
+				DependencyType:  childDepType,
+				Description:     childComp.Description,
+				DetectionSource: childComp.DetectionSource,
+				Revision:        childComp.Revision,
+				Channel:         childComp.Channel,
+				IncludePaths:    childComp.IncludePaths,
+				LinkLibraries:   childComp.LinkLibraries,
 			})
 			continue
 		}

@@ -340,6 +340,37 @@ var KnownLibraries = []LibraryFingerprint{
 		PURL:         "pkg:conan/arrow",
 		Description:  "Apache Arrow columnar data format",
 	},
+
+	// ── Embedded / cross-compile runtime libraries ──────────────────────────
+
+	{
+		Name:         "libgcc",
+		PathSegments: []string{"libgcc"},
+		Headers:      []string{},
+		PURL:         "pkg:generic/libgcc",
+		Description:  "GCC low-level runtime library (compiler support routines)",
+	},
+	{
+		Name:         "libc_nano",
+		PathSegments: []string{"libc_nano", "libc-nano"},
+		Headers:      []string{},
+		PURL:         "pkg:generic/newlib-nano",
+		Description:  "Newlib-nano C standard library for embedded targets",
+	},
+	{
+		Name:         "libnosys",
+		PathSegments: []string{"libnosys"},
+		Headers:      []string{},
+		PURL:         "pkg:generic/libnosys",
+		Description:  "Newlib stub syscall library (no-OS stubs)",
+	},
+	{
+		Name:         "newlib",
+		PathSegments: []string{"newlib", "libc.a", "libc_s.a"},
+		Headers:      []string{},
+		PURL:         "pkg:generic/newlib",
+		Description:  "Newlib C standard library for embedded systems",
+	},
 }
 
 // stdlibHeaders is the set of standard C and C++ library headers to exclude.

@@ -381,12 +381,12 @@ func TestRecursiveTree(t *testing.T) {
 		t.Errorf("zlib.Children count = %d, want 0", len(opensslNode.Children[0].Children))
 	}
 
-	// IsDirect flags
-	if !tree.Roots[0].IsDirect {
-		t.Error("boost root node should have IsDirect=true")
+	// DependencyType flags
+	if tree.Roots[0].DependencyType != "direct" {
+		t.Errorf("boost root node DependencyType = %q, want \"direct\"", tree.Roots[0].DependencyType)
 	}
-	if tree.Roots[2].Children[0].IsDirect {
-		t.Error("zlib child node should have IsDirect=false")
+	if tree.Roots[2].Children[0].DependencyType != "transitive" {
+		t.Errorf("zlib child node DependencyType = %q, want \"transitive\"", tree.Roots[2].Children[0].DependencyType)
 	}
 }
 
