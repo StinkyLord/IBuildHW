@@ -19,6 +19,8 @@ var (
 	flagFormat         string
 	flagVerbose        bool
 	flagShowStrategies bool
+	flagConanGraph     bool
+	flagConanImage     string
 )
 
 var rootCmd = &cobra.Command{
@@ -57,6 +59,13 @@ func init() {
 	scanCmd.Flags().StringVarP(&flagFormat, "format", "f", "cyclonedx", "Output format: cyclonedx")
 	scanCmd.Flags().BoolVarP(&flagVerbose, "verbose", "v", false, "Enable verbose output")
 	scanCmd.Flags().BoolVar(&flagShowStrategies, "show-strategies", false, "Print which strategies fired after scanning")
+	scanCmd.Flags().BoolVar(&flagConanGraph, "conan-graph", false,
+		"Run 'conan graph info' inside Docker to resolve the full Conan dependency tree.\n"+
+			"Requires Docker on the host. The project dir is mounted read-only; nothing is\n"+
+			"installed on the customer's machine. If a graph.json already exists in the\n"+
+			"project root it is used directly without running Docker.")
+	scanCmd.Flags().StringVar(&flagConanImage, "conan-image", "conanio/conan:latest",
+		"Docker image to use when --conan-graph is set (must have conan pre-installed)")
 
 	rootCmd.AddCommand(scanCmd)
 }
@@ -87,6 +96,8 @@ func runScan(cmd *cobra.Command, args []string) error {
 	fmt.Fprintf(os.Stderr, "Scanning: %s\n", absDir)
 
 	s := scanner.New(absDir, flagVerbose)
+	s.ConanGraph = flagConanGraph
+	s.ConanDockerImage = flagConanImage
 	result, err := s.Scan()
 	if err != nil {
 		return fmt.Errorf("scan failed: %w", err)

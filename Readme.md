@@ -45,10 +45,15 @@ C++ Project Directory
 │  │   conanfile.txt/py)  │  │   vcpkg-lock.json)   │   │
 │  └─────────────────────┘  └──────────────────────┘   │
 │  ┌─────────────────────┐  ┌──────────────────────┐   │
-│  │   Meson              │  │   Header Scan        │   │
-│  │  (meson.build,       │  │  (#include analysis, │   │
-│  │   .wrap files)       │  │   fallback only)     │   │
+│  │   Conan Graph        │  │   Meson              │   │
+│  │  (graph.json via     │  │  (meson.build,       │   │
+│  │   conan graph info)  │  │   .wrap files)       │   │
 │  └─────────────────────┘  └──────────────────────┘   │
+│  ┌─────────────────────┐                             │
+│  │   Header Scan        │                             │
+│  │  (#include analysis, │                             │
+│  │   fallback only)     │                             │
+│  └─────────────────────┘                             │
 │                                                       │
 │              Merge & Deduplicate                      │
 └───────────────────────────────────────────────────────┘
@@ -70,6 +75,7 @@ All strategies run **concurrently**. Results are merged and deduplicated by libr
 | **Build Logs** | `CMakeFiles/*/link.txt`, `*.tlog`, `build.ninja`, `Makefile` | `-l` flags, `/DEFAULTLIB:`, absolute `.lib` paths |
 | **CMake** | `CMakeCache.txt`, `CMakeLists.txt` | `find_package()`, `FetchContent_Declare()`, `_DIR` cache entries |
 | **Conan** | `conan.lock`, `conanfile.txt`, `conanfile.py` | All declared dependencies are external |
+| **Conan Graph** | `graph.json` (from `conan graph info . --format=json`) | Full resolved tree with direct/transitive edges, exact versions, license metadata |
 | **vcpkg** | `vcpkg.json`, `vcpkg-lock.json`, `installed/vcpkg/status` | All declared dependencies are external |
 | **Meson** | `meson.build`, `*.wrap` | `dependency()`, `subproject()` calls |
 | **Header Scan** | `*.cpp`, `*.h`, `*.hpp`, etc. | Angle-bracket includes matching known library fingerprints, not resolvable inside project |
@@ -120,19 +126,29 @@ go install github.com/StinkyLord/cpp-sbom-builder@latest
 
 ```bash
 # Basic scan — writes sbom.json in the current directory
-cpp-sbom-builder scan --dir /path/to/cpp/project
+./cpp-sbom-builder scan --dir /path/to/cpp/project
 
 # Specify output file
-cpp-sbom-builder scan --dir /path/to/cpp/project --output /tmp/my-sbom.json
+./cpp-sbom-builder scan --dir /path/to/cpp/project --output /tmp/my-sbom.json
 
 # Print SBOM to stdout
-cpp-sbom-builder scan --dir /path/to/cpp/project --output -
+./cpp-sbom-builder scan --dir /path/to/cpp/project --output -
 
 # Verbose mode (shows which strategies fired and what files were parsed)
-cpp-sbom-builder scan --dir /path/to/cpp/project --verbose
+./cpp-sbom-builder scan --dir /path/to/cpp/project --verbose
 
 # Show strategy summary after scan
-cpp-sbom-builder scan --dir /path/to/cpp/project --show-strategies
+./cpp-sbom-builder scan --dir /path/to/cpp/project --show-strategies
+
+# Use conan graph info for the richest Conan dependency data (requires Docker)
+./cpp-sbom-builder scan --dir /path/to/cpp/project --conan-graph --output sbom.json
+
+# Use a custom Conan Docker image
+./cpp-sbom-builder scan --dir /path/to/cpp/project --conan-graph --conan-image conanio/conan:2.0 --output sbom.json
+
+# If you already ran `conan graph info . --format=json > graph.json` manually,
+# just place graph.json in the project root — it will be picked up automatically
+# without needing Docker or --conan-graph.
 ```
 
 ### All flags
@@ -144,6 +160,8 @@ cpp-sbom-builder scan --dir /path/to/cpp/project --show-strategies
 | `--format` | `-f` | `cyclonedx` | Output format (`cyclonedx`) |
 | `--verbose` | `-v` | `false` | Verbose logging |
 | `--show-strategies` | | `false` | Print strategy summary |
+| `--conan-graph` | | `false` | Run `conan graph info` in Docker for full Conan dependency tree |
+| `--conan-image` | | `conanio/conan:latest` | Docker image to use with `--conan-graph` |
 
 ---
 
@@ -164,6 +182,24 @@ cpp-sbom-builder scan --dir /tmp/nlohmann-json --output sbom-nlohmann.json --sho
 git clone https://github.com/conan-io/examples2.git /tmp/conan-examples
 cpp-sbom-builder scan --dir /tmp/conan-examples/examples/libraries/boost/boost_header_only --output sbom-boost.json --verbose
 ```
+
+### Example 3: Conan project with full graph resolution (requires Docker)
+
+```bash
+# Option A: Let the tool run conan inside Docker automatically
+cpp-sbom-builder scan --dir /path/to/conan-project --conan-graph --output sbom.json --verbose
+
+# Option B: Pre-generate graph.json yourself (no Docker needed at scan time)
+cd /path/to/conan-project
+conan graph info . --format=json > graph.json
+cpp-sbom-builder scan --dir . --output sbom.json --show-strategies
+```
+
+The `--conan-graph` strategy produces the richest Conan data:
+- **Exact resolved versions** (not range-based)
+- **Direct vs. transitive** classification from the actual dependency graph
+- **License and description** metadata from the Conan Center recipe
+- **Recipe revision hash** for reproducibility
 
 ### Example 3: A CMake project with compile_commands.json
 

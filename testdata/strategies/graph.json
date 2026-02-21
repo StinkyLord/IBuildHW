@@ -1,0 +1,86 @@
+{
+  "graph": {
+    "nodes": {
+      "0": {
+        "id": "0",
+        "name": "",
+        "version": "",
+        "ref": "conanfile",
+        "recipe": "Consumer",
+        "context": "host",
+        "dependencies": {
+          "1": {
+            "ref": "boost/1.84.0",
+            "direct": true,
+            "build": false,
+            "skip": false,
+            "libs": true
+          },
+          "2": {
+            "ref": "zlib/1.3.1",
+            "direct": true,
+            "build": false,
+            "skip": false,
+            "libs": true
+          },
+          "3": {
+            "ref": "cmake/3.27.0",
+            "direct": true,
+            "build": true,
+            "skip": false,
+            "libs": false
+          }
+        }
+      },
+      "1": {
+        "id": "1",
+        "name": "boost",
+        "version": "1.84.0",
+        "ref": "boost/1.84.0#abc123",
+        "recipe": "Cache",
+        "context": "host",
+        "package_type": "static-library",
+        "license": "BSL-1.0",
+        "description": "Boost provides free peer-reviewed portable C++ source libraries",
+        "homepage": "https://www.boost.org",
+        "rrev": "abc123",
+        "dependencies": {
+          "2": {
+            "ref": "zlib/1.3.1",
+            "direct": true,
+            "build": false,
+            "skip": false,
+            "libs": true
+          }
+        }
+      },
+      "2": {
+        "id": "2",
+        "name": "zlib",
+        "version": "1.3.1",
+        "ref": "zlib/1.3.1#def456",
+        "recipe": "Cache",
+        "context": "host",
+        "package_type": "static-library",
+        "license": "Zlib",
+        "description": "A Massively Spiffy Yet Delicately Unobtrusive Compression Library",
+        "homepage": "https://zlib.net",
+        "rrev": "def456",
+        "dependencies": {}
+      },
+      "3": {
+        "id": "3",
+        "name": "cmake",
+        "version": "3.27.0",
+        "ref": "cmake/3.27.0#ghi789",
+        "recipe": "Cache",
+        "context": "build",
+        "package_type": "application",
+        "license": "BSD-3-Clause",
+        "description": "CMake build system",
+        "rrev": "ghi789",
+        "dependencies": {}
+      }
+    }
+  }
+}

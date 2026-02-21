@@ -1,6 +1,7 @@
 package strategies
 
 import (
+	"os"
 	"path/filepath"
 	"runtime"
 	"testing"
@@ -558,6 +559,155 @@ func TestExtractVersionFromPath(t *testing.T) {
 		if got != tc.want {
 			t.Errorf("extractVersionFromPath(%q) = %q, want %q", tc.path, got, tc.want)
 		}
+	}
+}
+
+// ============================================================
+// ConanGraphStrategy: graph.json parsing
+// ============================================================
+
+func TestConanGraph_ParsesComponents(t *testing.T) {
+	graphPath := filepath.Join(testdataDir(), "graph.json")
+	data, err := os.ReadFile(graphPath)
+	if err != nil {
+		t.Fatalf("cannot read graph.json: %v", err)
+	}
+
+	result := parseConanGraphJSON(data)
+
+	byName := map[string]string{}
+	for _, c := range result.Components {
+		byName[c.Name] = c.Version
+	}
+
+	// boost and zlib are host-context packages → must appear
+	if v, ok := byName["boost"]; !ok {
+		t.Error("conan-graph: expected 'boost' component")
+	} else if v != "1.84.0" {
+		t.Errorf("boost version = %q, want 1.84.0", v)
+	}
+
+	if v, ok := byName["zlib"]; !ok {
+		t.Error("conan-graph: expected 'zlib' component")
+	} else if v != "1.3.1" {
+		t.Errorf("zlib version = %q, want 1.3.1", v)
+	}
+
+	// cmake is a build-context tool — it IS included as a component
+	// (we include build tools in the SBOM; they just don't appear in runtime edges)
+	if _, ok := byName["cmake"]; !ok {
+		t.Error("conan-graph: expected 'cmake' build-tool component")
+	}
+}
+
+func TestConanGraph_DirectNames(t *testing.T) {
+	graphPath := filepath.Join(testdataDir(), "graph.json")
+	data, err := os.ReadFile(graphPath)
+	if err != nil {
+		t.Fatalf("cannot read graph.json: %v", err)
+	}
+
+	result := parseConanGraphJSON(data)
+
+	// Node "0" (consumer) has direct=true edges to boost and zlib
+	if !result.DirectNames["boost"] {
+		t.Errorf("conan-graph: boost should be in DirectNames; got %v", result.DirectNames)
+	}
+	if !result.DirectNames["zlib"] {
+		t.Errorf("conan-graph: zlib should be in DirectNames; got %v", result.DirectNames)
+	}
+}
+
+func TestConanGraph_Edges(t *testing.T) {
+	graphPath := filepath.Join(testdataDir(), "graph.json")
+	data, err := os.ReadFile(graphPath)
+	if err != nil {
+		t.Fatalf("cannot read graph.json: %v", err)
+	}
+
+	result := parseConanGraphJSON(data)
+
+	// boost → zlib (runtime edge, not build)
+	boostDeps := result.Edges["boost"]
+	found := false
+	for _, d := range boostDeps {
+		if d == "zlib" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("conan-graph: expected boost→zlib edge; boost edges=%v", boostDeps)
+	}
+}
+
+func TestConanGraph_PURL(t *testing.T) {
+	graphPath := filepath.Join(testdataDir(), "graph.json")
+	data, err := os.ReadFile(graphPath)
+	if err != nil {
+		t.Fatalf("cannot read graph.json: %v", err)
+	}
+
+	result := parseConanGraphJSON(data)
+
+	for _, c := range result.Components {
+		if c.Name == "boost" {
+			if c.PURL == "" {
+				t.Error("conan-graph: boost PURL is empty")
+			}
+			// Should be pkg:conan/boost@1.84.0
+			if !containsStr(c.PURL, "pkg:conan/boost@1.84.0") {
+				t.Errorf("boost PURL = %q, want it to contain pkg:conan/boost@1.84.0", c.PURL)
+			}
+			return
+		}
+	}
+	t.Error("boost not found in conan-graph components")
+}
+
+func TestConanGraph_Revision(t *testing.T) {
+	graphPath := filepath.Join(testdataDir(), "graph.json")
+	data, err := os.ReadFile(graphPath)
+	if err != nil {
+		t.Fatalf("cannot read graph.json: %v", err)
+	}
+
+	result := parseConanGraphJSON(data)
+
+	for _, c := range result.Components {
+		if c.Name == "boost" {
+			if c.Revision != "abc123" {
+				t.Errorf("boost revision = %q, want abc123", c.Revision)
+			}
+			return
+		}
+	}
+	t.Error("boost not found in conan-graph components")
+}
+
+func TestConanGraph_DetectionSource(t *testing.T) {
+	graphPath := filepath.Join(testdataDir(), "graph.json")
+	data, err := os.ReadFile(graphPath)
+	if err != nil {
+		t.Fatalf("cannot read graph.json: %v", err)
+	}
+
+	result := parseConanGraphJSON(data)
+
+	for _, c := range result.Components {
+		if c.DetectionSource != "conan-graph" {
+			t.Errorf("component %q has DetectionSource=%q, want conan-graph", c.Name, c.DetectionSource)
+		}
+	}
+}
+
+func TestConanGraph_PassiveMode_FindsExistingFile(t *testing.T) {
+	// The testdata/strategies directory has a graph.json — passive mode should find it
+	dir := testdataDir()
+	strat := &ConanGraphStrategy{UseDocker: false}
+	result := strat.ScanWithGraph(dir, false)
+
+	if len(result.Components) == 0 {
+		t.Error("conan-graph passive mode: expected components from graph.json, got none")
 	}
 }
 

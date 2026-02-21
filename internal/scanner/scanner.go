@@ -29,6 +29,15 @@ type Result struct {
 type Scanner struct {
 	ProjectRoot string
 	Verbose     bool
+
+	// ConanGraph enables the conan-graph strategy.
+	// When true the strategy will look for an existing graph.json first;
+	// if none is found it runs conan inside Docker.
+	ConanGraph bool
+
+	// ConanDockerImage overrides the Docker image used for conan graph info.
+	// Defaults to "conanio/conan:latest".
+	ConanDockerImage string
 }
 
 // New creates a Scanner.
@@ -49,8 +58,31 @@ func (s *Scanner) Scan() (*Result, error) {
 	}
 
 	// --- Strategies that return graph edges run separately ---
+
+	// ConanGraphStrategy: runs first if --conan-graph is set or a graph.json exists.
+	// It supersedes the plain ConanStrategy when it produces results.
+	conanGraphStrat := &strategies.ConanGraphStrategy{
+		UseDocker:   s.ConanGraph,
+		DockerImage: s.ConanDockerImage,
+	}
+	conanGraphFullResult := conanGraphStrat.ScanWithGraph(s.ProjectRoot, s.Verbose)
+
+	// Plain ConanStrategy (conanfile.txt/py + conan.lock) — used as fallback
+	// when conan-graph produced no results.
 	conanStrat := &strategies.ConanStrategy{}
-	conanGraphResult := conanStrat.ScanWithGraph(s.ProjectRoot, s.Verbose)
+	conanLockResult := conanStrat.ScanWithGraph(s.ProjectRoot, s.Verbose)
+
+	// Decide which conan result to use for the dependency graph.
+	// conan-graph wins if it found any components (it has richer data).
+	var activeConanResult *strategies.ConanScanResult
+	var activeConanName string
+	if len(conanGraphFullResult.Components) > 0 {
+		activeConanResult = conanGraphFullResult
+		activeConanName = conanGraphStrat.Name()
+	} else {
+		activeConanResult = conanLockResult
+		activeConanName = conanStrat.Name()
+	}
 
 	linkerMapStrat := &strategies.LinkerMapStrategy{}
 	linkerMapResult := linkerMapStrat.ScanWithEdges(s.ProjectRoot, s.Verbose)
@@ -71,13 +103,13 @@ func (s *Scanner) Scan() (*Result, error) {
 	resultCh := make(chan stratResult, len(otherStrategies)+3)
 	var wg sync.WaitGroup
 
-	// Submit conan results
+	// Submit active conan results
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
 		resultCh <- stratResult{
-			name:       conanStrat.Name(),
-			components: conanGraphResult.Components,
+			name:       activeConanName,
+			components: activeConanResult.Components,
 		}
 	}()
 
@@ -166,8 +198,8 @@ func (s *Scanner) Scan() (*Result, error) {
 	// Collect all "direct" names from all manifest strategies
 	allDirectNames := map[string]bool{}
 
-	// From Conan manifests (conanfile.txt/py)
-	for name := range conanGraphResult.DirectNames {
+	// From Conan manifests (conanfile.txt/py) or conan-graph DirectNames
+	for name := range activeConanResult.DirectNames {
 		allDirectNames[normalizeName(name)] = true
 	}
 
@@ -216,7 +248,7 @@ func (s *Scanner) Scan() (*Result, error) {
 			}
 		}
 	}
-	mergeEdges(conanGraphResult.Edges)
+	mergeEdges(activeConanResult.Edges)
 	mergeEdges(linkerMapResult.Edges)
 	mergeEdges(binaryEdgesResult.Edges)
 
@@ -294,6 +326,8 @@ func mergeComponent(merged map[string]*model.Component, incoming *model.Componen
 // Higher = more reliable.
 func sourceRank(source string) int {
 	switch source {
+	case "conan-graph":
+		return 11
 	case "conan", "vcpkg":
 		return 10
 	case "compile_commands.json":
