@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"sort"
 	"time"
 
 	"github.com/StinkyLord/cpp-sbom-builder/internal/model"
@@ -15,36 +14,14 @@ import (
 // ---- CycloneDX 1.4 JSON schema types ----
 
 type cdxBOM struct {
-	BOMFormat      string          `json:"bomFormat"`
-	SpecVersion    string          `json:"specVersion"`
-	Version        int             `json:"version"`
-	SerialNumber   string          `json:"serialNumber"`
-	Metadata       cdxMetadata     `json:"metadata"`
-	Components     []cdxComponent  `json:"components"`
-	Dependencies   []cdxDependency `json:"dependencies,omitempty"`
-	DependencyTree []*cdxTreeNode  `json:"x-dependencyTree,omitempty"`
+	BOMFormat      string         `json:"bomFormat"`
+	SpecVersion    string         `json:"specVersion"`
+	Version        int            `json:"version"`
+	SerialNumber   string         `json:"serialNumber"`
+	Metadata       cdxMetadata    `json:"metadata"`
+	DependencyTree []*cdxTreeNode `json:"dependencyTree,omitempty"`
 }
 
-// cdxTreeNode is a recursive tree node for the x-dependencyTree extension.
-// Only direct dependencies appear at the root; each node carries its full
-// subtree of children inline — npm package-lock.json style.
-//
-// Example:
-//
-//	[
-//	  { "name":"X", "version":"1", "children": [
-//	      { "name":"A", "version":"1", "children": [
-//	          { "name":"B", "version":"1" }
-//	      ]}
-//	  ]},
-//	  { "name":"Y", "version":"1", "children": [
-//	      { "name":"C", "version":"1", "children": [
-//	          { "name":"A", "version":"1", "children": [
-//	              { "name":"B", "version":"1" }
-//	          ]}
-//	      ]}
-//	  ]}
-//	]
 type cdxTreeNode struct {
 	Name     string         `json:"name"`
 	Version  string         `json:"version"`
@@ -62,27 +39,6 @@ type cdxTool struct {
 	Vendor  string `json:"vendor"`
 	Name    string `json:"name"`
 	Version string `json:"version"`
-}
-
-type cdxComponent struct {
-	Type        string        `json:"type"`
-	Name        string        `json:"name"`
-	Version     string        `json:"version"`
-	PURL        string        `json:"purl,omitempty"`
-	Description string        `json:"description,omitempty"`
-	Properties  []cdxProperty `json:"properties,omitempty"`
-}
-
-type cdxProperty struct {
-	Name  string `json:"name"`
-	Value string `json:"value"`
-}
-
-// cdxDependency represents one node in the CycloneDX dependency graph.
-// "ref" is the PURL of the component; "dependsOn" lists the PURLs of its children.
-type cdxDependency struct {
-	Ref       string   `json:"ref"`
-	DependsOn []string `json:"dependsOn"`
 }
 
 // WriteCycloneDX serialises the scan result as a CycloneDX 1.4 JSON SBOM and
@@ -107,100 +63,7 @@ func WriteCycloneDX(result *scanner.Result, outputPath string, toolVersion strin
 }
 
 func buildCycloneDX(result *scanner.Result, toolVersion string) cdxBOM {
-	// Sort components by name for deterministic output
-	comps := make([]*model.Component, len(result.Components))
-	copy(comps, result.Components)
-	sort.Slice(comps, func(i, j int) bool {
-		return comps[i].Name < comps[j].Name
-	})
-
-	// Build a PURL lookup map for resolving child names to PURLs
-	purlByName := map[string]string{}
-	for _, c := range comps {
-		if c.PURL != "" {
-			purlByName[c.Name] = c.PURL
-		}
-	}
-
-	cdxComps := make([]cdxComponent, 0, len(comps))
-	var cdxDeps []cdxDependency
-
-	for _, c := range comps {
-		comp := cdxComponent{
-			Type:        "library",
-			Name:        c.Name,
-			Version:     c.Version,
-			PURL:        c.PURL,
-			Description: c.Description,
-		}
-
-		// Add dependency type (direct / transitive)
-		comp.Properties = append(comp.Properties, cdxProperty{
-			Name:  "sbom:dependencyType",
-			Value: c.DependencyType(),
-		})
-
-		// Conan-specific: revision and channel
-		if c.Revision != "" {
-			comp.Properties = append(comp.Properties, cdxProperty{
-				Name:  "sbom:conan:revision",
-				Value: c.Revision,
-			})
-		}
-		if c.Channel != "" && c.Channel != "_/_" {
-			comp.Properties = append(comp.Properties, cdxProperty{
-				Name:  "sbom:conan:channel",
-				Value: c.Channel,
-			})
-		}
-
-		// Add detection metadata as CycloneDX properties
-		if c.DetectionSource != "" {
-			comp.Properties = append(comp.Properties, cdxProperty{
-				Name:  "sbom:detectionSource",
-				Value: c.DetectionSource,
-			})
-		}
-		for _, ip := range c.IncludePaths {
-			comp.Properties = append(comp.Properties, cdxProperty{
-				Name:  "sbom:includePath",
-				Value: ip,
-			})
-		}
-		for _, ll := range c.LinkLibraries {
-			comp.Properties = append(comp.Properties, cdxProperty{
-				Name:  "sbom:linkLibrary",
-				Value: ll,
-			})
-		}
-
-		cdxComps = append(cdxComps, comp)
-
-		// Build the dependency graph entry for this component
-		if c.PURL != "" {
-			dep := cdxDependency{
-				Ref:       c.PURL,
-				DependsOn: []string{},
-			}
-			// Resolve child names to PURLs
-			for _, childName := range c.Dependencies {
-				if childPURL, ok := purlByName[childName]; ok {
-					dep.DependsOn = append(dep.DependsOn, childPURL)
-				} else {
-					// Fall back to a generic PURL if we don't have one
-					dep.DependsOn = append(dep.DependsOn, "pkg:generic/"+childName)
-				}
-			}
-			cdxDeps = append(cdxDeps, dep)
-		}
-	}
-
-	// Sort dependencies by ref for deterministic output
-	sort.Slice(cdxDeps, func(i, j int) bool {
-		return cdxDeps[i].Ref < cdxDeps[j].Ref
-	})
-
-	// Build the x-dependencyTree extension: recursive npm-style tree.
+	// Build the dependencyTree: npm-style tree.
 	// Only direct dependencies appear at the root; each carries its full subtree.
 	var depTree []*cdxTreeNode
 	if result.DependencyTree != nil && len(result.DependencyTree.Roots) > 0 {
@@ -224,24 +87,42 @@ func buildCycloneDX(result *scanner.Result, toolVersion string) cdxBOM {
 				},
 			},
 		},
-		Components:     cdxComps,
-		Dependencies:   cdxDeps,
 		DependencyTree: depTree,
 	}
 }
 
-// modelNodeToCDX converts a model.TreeNode to a cdxTreeNode recursively.
-func modelNodeToCDX(n *model.TreeNode) *cdxTreeNode {
-	node := &cdxTreeNode{
-		Name:    n.Name,
-		Version: n.Version,
-		PURL:    n.PURL,
-		Direct:  n.DependencyType == "direct",
+// modelNodeToCDX converts a model.TreeNode to a cdxTreeNode iteratively.
+func modelNodeToCDX(root *model.TreeNode) *cdxTreeNode {
+	type workItem struct {
+		src *model.TreeNode
+		dst *cdxTreeNode
 	}
-	for _, child := range n.Children {
-		node.Children = append(node.Children, modelNodeToCDX(child))
+
+	rootDst := &cdxTreeNode{
+		Name:    root.Name,
+		Version: root.Version,
+		PURL:    root.PURL,
+		Direct:  root.DependencyType == "direct",
 	}
-	return node
+
+	queue := []workItem{{src: root, dst: rootDst}}
+	for len(queue) > 0 {
+		item := queue[0]
+		queue = queue[1:]
+
+		for _, child := range item.src.Children {
+			childDst := &cdxTreeNode{
+				Name:    child.Name,
+				Version: child.Version,
+				PURL:    child.PURL,
+				Direct:  child.DependencyType == "direct",
+			}
+			item.dst.Children = append(item.dst.Children, childDst)
+			queue = append(queue, workItem{src: child, dst: childDst})
+		}
+	}
+
+	return rootDst
 }
 
 // generateURN produces a simple URN:UUID using the current time.

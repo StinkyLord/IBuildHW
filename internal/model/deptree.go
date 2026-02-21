@@ -64,17 +64,28 @@ func BuildDependencyTree(components []*Component) *DependencyTree {
 		}
 	}
 
-	tree.Roots = tree.buildRecursiveTree()
+	tree.Roots = tree.buildTree()
 	return tree
 }
 
-// buildRecursiveTree builds the npm-style recursive dependency tree.
+// workItem holds a pending node to be expanded along with the set of ancestor
+// keys on the path from the root to this node (used for cycle detection).
+type workItem struct {
+	comp      *Component
+	node      *TreeNode
+	ancestors map[string]bool
+}
+
+// buildTree builds the npm-style dependency tree iteratively, level by level,
+// using a queue (slice) instead of recursion. This avoids stack overflows on
+// very deep or wide dependency graphs.
+//
 // Only direct dependencies appear at the root. Each node carries its full
-// subtree of children. Cycles are broken by tracking the current path
-// (ancestor set) — if a node would create a cycle, it is emitted as a
-// leaf (no children) to avoid infinite recursion.
-func (t *DependencyTree) buildRecursiveTree() []*TreeNode {
-	// Sort direct deps for deterministic output
+// subtree of children. Cycles are broken by tracking the ancestor set on the
+// path from the root to the current node — if a child would create a cycle it
+// is emitted as a leaf (no children).
+func (t *DependencyTree) buildTree() []*TreeNode {
+	// Sort direct deps for deterministic output.
 	directs := make([]*Component, len(t.Direct))
 	copy(directs, t.Direct)
 	sort.Slice(directs, func(i, j int) bool {
@@ -82,67 +93,68 @@ func (t *DependencyTree) buildRecursiveTree() []*TreeNode {
 	})
 
 	roots := make([]*TreeNode, 0, len(directs))
+
+	// queue holds all nodes whose children still need to be resolved.
+	queue := make([]workItem, 0, len(directs))
+
+	// Build the root level (level 0).
 	for _, c := range directs {
-		ancestors := map[string]bool{}
-		roots = append(roots, t.buildNode(c, ancestors))
-	}
-	return roots
-}
-
-// buildNode recursively builds a TreeNode for the given component.
-// ancestors is the set of component keys on the current path from the root —
-// used to detect and break cycles.
-func (t *DependencyTree) buildNode(c *Component, ancestors map[string]bool) *TreeNode {
-	depType := "transitive"
-	if c.IsDirect {
-		depType = "direct"
-	}
-
-	node := &TreeNode{
-		Name:            c.Name,
-		Version:         c.Version,
-		PURL:            c.PURL,
-		DependencyType:  depType,
-		Description:     c.Description,
-		DetectionSource: c.DetectionSource,
-		Revision:        c.Revision,
-		Channel:         c.Channel,
-		IncludePaths:    c.IncludePaths,
-		LinkLibraries:   c.LinkLibraries,
-	}
-
-	// Mark this node as an ancestor for the current path
-	key := c.Key()
-	ancestors[key] = true
-	defer func() { delete(ancestors, key) }()
-
-	// Sort children for deterministic output
-	childNames := make([]string, len(c.Dependencies))
-	copy(childNames, c.Dependencies)
-	sort.Strings(childNames)
-
-	for _, childName := range childNames {
-		childComp := t.ByName[normalizeKey(childName)]
-		if childComp == nil {
-			// Referenced in an edge but not in the component list —
-			// emit a placeholder leaf node
-			node.Children = append(node.Children, &TreeNode{
-				Name:           childName,
-				Version:        "unknown",
-				PURL:           "pkg:generic/" + childName,
-				DependencyType: "transitive",
-			})
-			continue
+		depType := "transitive"
+		if c.IsDirect {
+			depType = "direct"
 		}
+		node := &TreeNode{
+			Name:            c.Name,
+			Version:         c.Version,
+			PURL:            c.PURL,
+			DependencyType:  depType,
+			Description:     c.Description,
+			DetectionSource: c.DetectionSource,
+			Revision:        c.Revision,
+			Channel:         c.Channel,
+			IncludePaths:    c.IncludePaths,
+			LinkLibraries:   c.LinkLibraries,
+		}
+		roots = append(roots, node)
 
-		childKey := childComp.Key()
-		if ancestors[childKey] {
-			// Cycle detected — emit as a leaf to break the cycle
+		// Each root gets its own ancestor set so sibling paths are independent.
+		ancestors := map[string]bool{c.Key(): true}
+		queue = append(queue, workItem{comp: c, node: node, ancestors: ancestors})
+	}
+
+	// Process the queue level by level (BFS order).
+	// Each iteration pops the front item, resolves its children, and enqueues
+	// those children for further expansion.
+	for len(queue) > 0 {
+		// Dequeue the front item.
+		item := queue[0]
+		queue = queue[1:]
+
+		// Sort children for deterministic output.
+		childNames := make([]string, len(item.comp.Dependencies))
+		copy(childNames, item.comp.Dependencies)
+		sort.Strings(childNames)
+
+		for _, childName := range childNames {
+			childComp := t.ByName[normalizeKey(childName)]
+			if childComp == nil {
+				// Referenced in an edge but not in the component list —
+				// emit a placeholder leaf node (no further expansion needed).
+				item.node.Children = append(item.node.Children, &TreeNode{
+					Name:           childName,
+					Version:        "unknown",
+					PURL:           "pkg:generic/" + childName,
+					DependencyType: "transitive",
+				})
+				continue
+			}
+
 			childDepType := "transitive"
 			if childComp.IsDirect {
 				childDepType = "direct"
 			}
-			node.Children = append(node.Children, &TreeNode{
+
+			childNode := &TreeNode{
 				Name:            childComp.Name,
 				Version:         childComp.Version,
 				PURL:            childComp.PURL,
@@ -153,12 +165,27 @@ func (t *DependencyTree) buildNode(c *Component, ancestors map[string]bool) *Tre
 				Channel:         childComp.Channel,
 				IncludePaths:    childComp.IncludePaths,
 				LinkLibraries:   childComp.LinkLibraries,
-			})
-			continue
-		}
+			}
+			item.node.Children = append(item.node.Children, childNode)
 
-		node.Children = append(node.Children, t.buildNode(childComp, ancestors))
+			childKey := childComp.Key()
+			if item.ancestors[childKey] {
+				// Cycle detected — emit as a leaf to break the cycle.
+				// Do NOT enqueue for further expansion.
+				continue
+			}
+
+			// Build a new ancestor set for this child's path by copying the
+			// parent's set and adding the child's key.
+			childAncestors := make(map[string]bool, len(item.ancestors)+1)
+			for k := range item.ancestors {
+				childAncestors[k] = true
+			}
+			childAncestors[childKey] = true
+
+			queue = append(queue, workItem{comp: childComp, node: childNode, ancestors: childAncestors})
+		}
 	}
 
-	return node
+	return roots
 }

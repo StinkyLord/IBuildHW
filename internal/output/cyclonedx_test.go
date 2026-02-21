@@ -89,7 +89,7 @@ func TestCycloneDXSchema(t *testing.T) {
 	}
 
 	// Required top-level fields
-	requiredFields := []string{"bomFormat", "specVersion", "version", "serialNumber", "metadata", "components"}
+	requiredFields := []string{"bomFormat", "specVersion", "version", "serialNumber", "metadata"}
 	for _, field := range requiredFields {
 		if _, ok := raw[field]; !ok {
 			t.Errorf("missing required field %q in CycloneDX output", field)
@@ -112,176 +112,6 @@ func TestCycloneDXSchema(t *testing.T) {
 	var serialNumber string
 	if err := json.Unmarshal(raw["serialNumber"], &serialNumber); err != nil || !strings.HasPrefix(serialNumber, "urn:uuid:") {
 		t.Errorf("serialNumber = %q, want prefix %q", serialNumber, "urn:uuid:")
-	}
-}
-
-// TestCycloneDXComponents verifies that all input components appear in the output.
-func TestCycloneDXComponents(t *testing.T) {
-	result := makeTestResult()
-
-	tmp := filepath.Join(t.TempDir(), "sbom.json")
-	if err := WriteCycloneDX(result, tmp, "1.0.0-test"); err != nil {
-		t.Fatalf("WriteCycloneDX failed: %v", err)
-	}
-
-	data, err := os.ReadFile(tmp)
-	if err != nil {
-		t.Fatalf("cannot read output file: %v", err)
-	}
-
-	var bom cdxBOM
-	if err := json.Unmarshal(data, &bom); err != nil {
-		t.Fatalf("cannot unmarshal CycloneDX BOM: %v", err)
-	}
-
-	if len(bom.Components) != len(result.Components) {
-		t.Errorf("component count = %d, want %d", len(bom.Components), len(result.Components))
-	}
-
-	byName := map[string]cdxComponent{}
-	for _, c := range bom.Components {
-		byName[c.Name] = c
-	}
-
-	// Check boost
-	boost, ok := byName["boost"]
-	if !ok {
-		t.Fatal("boost component missing from output")
-	}
-	if boost.Version != "1.82.0" {
-		t.Errorf("boost version = %q, want %q", boost.Version, "1.82.0")
-	}
-	if boost.PURL != "pkg:conan/boost@1.82.0" {
-		t.Errorf("boost PURL = %q, want %q", boost.PURL, "pkg:conan/boost@1.82.0")
-	}
-	if boost.Type != "library" {
-		t.Errorf("boost type = %q, want %q", boost.Type, "library")
-	}
-
-	// Check openssl
-	ssl, ok := byName["openssl"]
-	if !ok {
-		t.Fatal("openssl component missing from output")
-	}
-	if ssl.Version != "3.1.4" {
-		t.Errorf("openssl version = %q, want %q", ssl.Version, "3.1.4")
-	}
-
-	// Check nlohmann-json (unknown version)
-	nj, ok := byName["nlohmann-json"]
-	if !ok {
-		t.Fatal("nlohmann-json component missing from output")
-	}
-	if nj.Version != "unknown" {
-		t.Errorf("nlohmann-json version = %q, want %q", nj.Version, "unknown")
-	}
-
-	// Check zlib (transitive)
-	_, ok = byName["zlib"]
-	if !ok {
-		t.Fatal("zlib component missing from output")
-	}
-}
-
-// TestCycloneDXDependencyType verifies that direct/transitive classification
-// is correctly recorded in the sbom:dependencyType property.
-func TestCycloneDXDependencyType(t *testing.T) {
-	result := makeTestResult()
-
-	tmp := filepath.Join(t.TempDir(), "sbom.json")
-	if err := WriteCycloneDX(result, tmp, "1.0.0-test"); err != nil {
-		t.Fatalf("WriteCycloneDX failed: %v", err)
-	}
-
-	data, err := os.ReadFile(tmp)
-	if err != nil {
-		t.Fatalf("cannot read output file: %v", err)
-	}
-
-	var bom cdxBOM
-	if err := json.Unmarshal(data, &bom); err != nil {
-		t.Fatalf("cannot unmarshal CycloneDX BOM: %v", err)
-	}
-
-	byName := map[string]cdxComponent{}
-	for _, c := range bom.Components {
-		byName[c.Name] = c
-	}
-
-	getProp := func(comp cdxComponent, propName string) string {
-		for _, p := range comp.Properties {
-			if p.Name == propName {
-				return p.Value
-			}
-		}
-		return ""
-	}
-
-	// boost is direct
-	if dt := getProp(byName["boost"], "sbom:dependencyType"); dt != "direct" {
-		t.Errorf("boost dependencyType = %q, want %q", dt, "direct")
-	}
-
-	// openssl is direct
-	if dt := getProp(byName["openssl"], "sbom:dependencyType"); dt != "direct" {
-		t.Errorf("openssl dependencyType = %q, want %q", dt, "direct")
-	}
-
-	// zlib is transitive
-	if dt := getProp(byName["zlib"], "sbom:dependencyType"); dt != "transitive" {
-		t.Errorf("zlib dependencyType = %q, want %q", dt, "transitive")
-	}
-
-	// nlohmann-json is direct
-	if dt := getProp(byName["nlohmann-json"], "sbom:dependencyType"); dt != "direct" {
-		t.Errorf("nlohmann-json dependencyType = %q, want %q", dt, "direct")
-	}
-}
-
-// TestCycloneDXDependenciesArray verifies that the top-level dependencies array
-// correctly encodes the parent→child relationships.
-func TestCycloneDXDependenciesArray(t *testing.T) {
-	result := makeTestResult()
-
-	tmp := filepath.Join(t.TempDir(), "sbom.json")
-	if err := WriteCycloneDX(result, tmp, "1.0.0-test"); err != nil {
-		t.Fatalf("WriteCycloneDX failed: %v", err)
-	}
-
-	data, err := os.ReadFile(tmp)
-	if err != nil {
-		t.Fatalf("cannot read output file: %v", err)
-	}
-
-	var bom cdxBOM
-	if err := json.Unmarshal(data, &bom); err != nil {
-		t.Fatalf("cannot unmarshal CycloneDX BOM: %v", err)
-	}
-
-	// dependencies array must be present
-	if len(bom.Dependencies) == 0 {
-		t.Fatal("dependencies array is empty")
-	}
-
-	// Build a map: ref -> dependsOn
-	depMap := map[string][]string{}
-	for _, d := range bom.Dependencies {
-		depMap[d.Ref] = d.DependsOn
-	}
-
-	// openssl should declare zlib as a child
-	opensslDeps, ok := depMap["pkg:conan/openssl@3.1.4"]
-	if !ok {
-		t.Fatal("openssl not found in dependencies array")
-	}
-	foundZlib := false
-	for _, dep := range opensslDeps {
-		if dep == "pkg:conan/zlib@1.2.13" {
-			foundZlib = true
-		}
-	}
-	if !foundZlib {
-		t.Errorf("openssl.dependsOn does not contain zlib; got %v", opensslDeps)
 	}
 }
 
@@ -390,9 +220,9 @@ func TestRecursiveTree(t *testing.T) {
 	}
 }
 
-// TestRecursiveTreeInOutput verifies that x-dependencyTree appears in the JSON output
+// TestDependencyTreeInOutput verifies that dependencyTree appears in the JSON output
 // and has the correct recursive structure.
-func TestRecursiveTreeInOutput(t *testing.T) {
+func TestDependencyTreeInOutput(t *testing.T) {
 	result := makeTestResult()
 
 	tmp := filepath.Join(t.TempDir(), "sbom.json")
@@ -410,9 +240,9 @@ func TestRecursiveTreeInOutput(t *testing.T) {
 		t.Fatalf("cannot unmarshal CycloneDX BOM: %v", err)
 	}
 
-	// x-dependencyTree must be present with 3 roots (direct deps)
+	// dependencyTree must be present with 3 roots (direct deps)
 	if len(bom.DependencyTree) != 3 {
-		t.Fatalf("x-dependencyTree root count = %d, want 3", len(bom.DependencyTree))
+		t.Fatalf("dependencyTree root count = %d, want 3", len(bom.DependencyTree))
 	}
 
 	// Find openssl root
@@ -424,7 +254,7 @@ func TestRecursiveTreeInOutput(t *testing.T) {
 		}
 	}
 	if opensslNode == nil {
-		t.Fatal("openssl not found in x-dependencyTree roots")
+		t.Fatal("openssl not found in dependencyTree roots")
 	}
 
 	// openssl must have zlib as a child
@@ -441,41 +271,6 @@ func TestRecursiveTreeInOutput(t *testing.T) {
 	// zlib child must have no further children
 	if len(opensslNode.Children[0].Children) != 0 {
 		t.Errorf("zlib.children count = %d, want 0", len(opensslNode.Children[0].Children))
-	}
-}
-
-// TestCycloneDXProperties verifies that detection metadata is included as properties.
-func TestCycloneDXProperties(t *testing.T) {
-	result := makeTestResult()
-
-	tmp := filepath.Join(t.TempDir(), "sbom.json")
-	if err := WriteCycloneDX(result, tmp, "1.0.0-test"); err != nil {
-		t.Fatalf("WriteCycloneDX failed: %v", err)
-	}
-
-	data, err := os.ReadFile(tmp)
-	if err != nil {
-		t.Fatalf("cannot read output file: %v", err)
-	}
-
-	var bom cdxBOM
-	if err := json.Unmarshal(data, &bom); err != nil {
-		t.Fatalf("cannot unmarshal CycloneDX BOM: %v", err)
-	}
-
-	byName := map[string]cdxComponent{}
-	for _, c := range bom.Components {
-		byName[c.Name] = c
-	}
-
-	boost := byName["boost"]
-	propMap := map[string]string{}
-	for _, p := range boost.Properties {
-		propMap[p.Name] = p.Value
-	}
-
-	if propMap["sbom:detectionSource"] != "conan" {
-		t.Errorf("boost detectionSource = %q, want %q", propMap["sbom:detectionSource"], "conan")
 	}
 }
 
@@ -505,33 +300,6 @@ func TestCycloneDXStdout(t *testing.T) {
 	var raw map[string]json.RawMessage
 	if err := json.Unmarshal(buf[:n], &raw); err != nil {
 		t.Errorf("stdout output is not valid JSON: %v", err)
-	}
-}
-
-// TestCycloneDXSorted verifies that components are sorted alphabetically by name.
-func TestCycloneDXSorted(t *testing.T) {
-	result := makeTestResult()
-
-	tmp := filepath.Join(t.TempDir(), "sbom.json")
-	if err := WriteCycloneDX(result, tmp, "1.0.0-test"); err != nil {
-		t.Fatalf("WriteCycloneDX failed: %v", err)
-	}
-
-	data, err := os.ReadFile(tmp)
-	if err != nil {
-		t.Fatalf("cannot read output file: %v", err)
-	}
-
-	var bom cdxBOM
-	if err := json.Unmarshal(data, &bom); err != nil {
-		t.Fatalf("cannot unmarshal CycloneDX BOM: %v", err)
-	}
-
-	for i := 1; i < len(bom.Components); i++ {
-		if bom.Components[i].Name < bom.Components[i-1].Name {
-			t.Errorf("components not sorted: %q comes before %q",
-				bom.Components[i-1].Name, bom.Components[i].Name)
-		}
 	}
 }
 

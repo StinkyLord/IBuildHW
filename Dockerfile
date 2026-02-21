@@ -55,7 +55,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # ── Conan (C++ package manager) ───────────────────────────────────────────────
-# Installed at image build time — nothing is installed on the customer's machine.
 RUN pip3 install --no-cache-dir "conan>=2.0"
 
 # Initialise a default Conan profile so `conan graph info` works out of the box
