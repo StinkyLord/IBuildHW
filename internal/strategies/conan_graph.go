@@ -11,11 +11,13 @@
 //   - Build-tool vs. runtime classification
 //
 // The strategy operates in two modes:
-//  1. Passive — a graph.json already exists in the project dir (user pre-ran the command).
-//     This is the zero-effort path: just drop graph.json in the project root.
-//  2. Active  — triggered by --conan-graph flag. Runs `conan graph info` as a local
-//     process. Conan is pre-installed in the cpp-sbom-builder Docker image, so this
-//     works out of the box when running inside the container. No Docker-in-Docker needed.
+//  1. Passive — walks the project tree and parses any graph.json files found.
+//     Zero-effort path: just drop graph.json anywhere in the project.
+//  2. Active  — triggered by --conan-graph flag. Walks the project tree to find
+//     every conanfile.py / conanfile.txt (at any depth), then runs
+//     `conan graph info <dir> --format=json` for each one.
+//     Conan is pre-installed in the cpp-sbom-builder Docker image.
+//     No Docker-in-Docker needed.
 package strategies
 
 import (
@@ -73,16 +75,13 @@ type conanGraphEdge struct {
 // It produces a fully resolved dependency tree with direct/transitive edges,
 // license metadata, and build-tool classification.
 type ConanGraphStrategy struct {
-	// UseDocker (--conan-graph flag) triggers active mode: runs `conan graph info`
-	// as a local process. Conan must be on PATH — it is pre-installed in the
-	// cpp-sbom-builder Docker image. No Docker-in-Docker is required.
-	// When false, the strategy only parses an existing graph.json file.
-	UseDocker bool
-
-	// DockerImage is kept for API compatibility but is no longer used.
-	// Previously the strategy tried to spin up a Docker container; now it runs
-	// conan directly as a local process inside the pre-built image.
-	DockerImage string
+	// RunConan triggers active mode: walks the project tree to find every
+	// conanfile.py / conanfile.txt (at any depth) and runs
+	// `conan graph info <dir> --format=json` for each one.
+	// Conan must be on PATH — it is pre-installed in the cpp-sbom-builder
+	// Docker image. No Docker-in-Docker is required.
+	// When false, the strategy only parses pre-existing graph.json files.
+	RunConan bool
 }
 
 func (s *ConanGraphStrategy) Name() string { return "conan-graph" }
@@ -94,78 +93,145 @@ func (s *ConanGraphStrategy) Scan(projectRoot string, verbose bool) ([]*model.Co
 }
 
 // ScanWithGraph returns the full graph result including edges and direct names.
+// It merges results from all conanfiles found anywhere in the project tree.
 func (s *ConanGraphStrategy) ScanWithGraph(projectRoot string, verbose bool) *ConanScanResult {
-	result := &ConanScanResult{
+	merged := &ConanScanResult{
 		DirectNames: map[string]bool{},
 		Edges:       map[string][]string{},
 	}
 
-	graphPath, err := s.resolveGraphJSON(projectRoot, verbose)
-	if err != nil {
-		if verbose {
-			fmt.Printf("  [conan-graph] %v\n", err)
+	// Step 1: collect all pre-existing graph.json files in the tree (passive)
+	graphFiles := s.findExistingGraphJSONs(projectRoot, verbose)
+
+	// Step 2: if RunConan is set, find all conanfile dirs and run conan graph info
+	if s.RunConan {
+		conanDirs := s.findConanfileDirs(projectRoot, verbose)
+		for _, dir := range conanDirs {
+			path, err := s.runConanLocally(dir, verbose)
+			if err != nil {
+				if verbose {
+					fmt.Printf("  [conan-graph] conan failed in %s: %v\n", dir, err)
+				}
+				continue
+			}
+			// avoid duplicates
+			found := false
+			for _, gf := range graphFiles {
+				if gf == path {
+					found = true
+					break
+				}
+			}
+			if !found {
+				graphFiles = append(graphFiles, path)
+			}
 		}
-		return result
 	}
 
-	data, err := os.ReadFile(graphPath)
-	if err != nil {
+	if len(graphFiles) == 0 {
 		if verbose {
-			fmt.Printf("  [conan-graph] cannot read %s: %v\n", graphPath, err)
+			fmt.Println("  [conan-graph] No graph.json files found and --conan-graph not set")
 		}
-		return result
+		return merged
 	}
 
-	if verbose {
-		fmt.Printf("  [conan-graph] Parsing %s\n", graphPath)
+	// Step 3: parse and merge all graph.json files
+	for _, gf := range graphFiles {
+		data, err := os.ReadFile(gf)
+		if err != nil {
+			if verbose {
+				fmt.Printf("  [conan-graph] cannot read %s: %v\n", gf, err)
+			}
+			continue
+		}
+		if verbose {
+			fmt.Printf("  [conan-graph] Parsing %s\n", gf)
+		}
+		r := parseConanGraphJSON(data)
+		merged.Components = append(merged.Components, r.Components...)
+		for k, v := range r.DirectNames {
+			merged.DirectNames[k] = v
+		}
+		for parent, children := range r.Edges {
+			for _, child := range children {
+				merged.Edges[parent] = appendUnique(merged.Edges[parent], child)
+			}
+		}
 	}
 
-	return parseConanGraphJSON(data)
+	return merged
 }
 
-// resolveGraphJSON returns the path to a graph.json to parse.
-// Priority:
-//  1. graph.json already exists in the project root → use it directly
-//  2. UseDocker (--conan-graph flag) is true → run conan locally (conan is
-//     pre-installed in the Docker image that wraps this binary)
-//  3. Otherwise → return an error (no graph.json available)
-func (s *ConanGraphStrategy) resolveGraphJSON(projectRoot string, verbose bool) (string, error) {
-	// 1. Passive mode: look for an existing graph.json
-	candidates := []string{
-		filepath.Join(projectRoot, "graph.json"),
-		filepath.Join(projectRoot, "build", "graph.json"),
-		filepath.Join(projectRoot, "conan-graph.json"),
-	}
-	for _, p := range candidates {
-		if _, err := os.Stat(p); err == nil {
-			if verbose {
-				fmt.Printf("  [conan-graph] Found existing graph.json at %s\n", p)
-			}
-			return p, nil
+// findExistingGraphJSONs walks the project tree and returns all graph.json /
+// conan-graph.json files found (passive mode — no conan invocation).
+func (s *ConanGraphStrategy) findExistingGraphJSONs(projectRoot string, verbose bool) []string {
+	var found []string
+	_ = filepath.WalkDir(projectRoot, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return nil
 		}
-	}
+		if d.IsDir() {
+			name := d.Name()
+			if name == ".git" || name == "node_modules" || name == ".conan" {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		name := d.Name()
+		if name == "graph.json" || name == "conan-graph.json" {
+			if verbose {
+				fmt.Printf("  [conan-graph] Found existing graph.json: %s\n", path)
+			}
+			found = append(found, path)
+		}
+		return nil
+	})
+	return found
+}
 
-	// 2. Active mode: run conan directly (it is pre-installed in the Docker image)
-	if s.UseDocker {
-		return s.runConanLocally(projectRoot, verbose)
-	}
+// findConanfileDirs walks the project tree and returns the directory of every
+// conanfile.py or conanfile.txt found (at any depth).
+// Each directory is returned only once even if both files exist in it.
+func (s *ConanGraphStrategy) findConanfileDirs(projectRoot string, verbose bool) []string {
+	seen := map[string]bool{}
+	var dirs []string
 
-	return "", fmt.Errorf("no graph.json found and --conan-graph not set")
+	_ = filepath.WalkDir(projectRoot, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if d.IsDir() {
+			name := d.Name()
+			if name == ".git" || name == "node_modules" || name == ".conan" ||
+				name == "build" || name == "_build" || name == "cmake-build" {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		name := d.Name()
+		if name == "conanfile.py" || name == "conanfile.txt" {
+			dir := filepath.Dir(path)
+			if !seen[dir] {
+				seen[dir] = true
+				dirs = append(dirs, dir)
+				if verbose {
+					fmt.Printf("  [conan-graph] Found conanfile in: %s\n", dir)
+				}
+			}
+		}
+		return nil
+	})
+	return dirs
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Local conan runner
 // ─────────────────────────────────────────────────────────────────────────────
 
-// runConanLocally runs `conan graph info . --format=json` as a local process.
-//
-// This is designed to run inside the cpp-sbom-builder Docker image where conan
-// is pre-installed. It does NOT require Docker-in-Docker.
-//
-// The DockerImage field is ignored in this mode (it was only relevant when the
-// tool tried to spin up its own container, which is no longer the approach).
-func (s *ConanGraphStrategy) runConanLocally(projectRoot string, verbose bool) (string, error) {
-	// Ensure conan is available on PATH
+// runConanLocally runs `conan graph info <conanfileDir> --format=json` as a
+// local process. Conan must be on PATH — it is pre-installed in the
+// cpp-sbom-builder Docker image. No Docker-in-Docker is required.
+func (s *ConanGraphStrategy) runConanLocally(conanfileDir string, verbose bool) (string, error) {
 	conanBin, err := exec.LookPath("conan")
 	if err != nil {
 		return "", fmt.Errorf("conan not found on PATH — " +
@@ -173,7 +239,6 @@ func (s *ConanGraphStrategy) runConanLocally(projectRoot string, verbose bool) (
 			"or pre-generate graph.json with: conan graph info . --format=json > graph.json")
 	}
 
-	// Write output to a temp file
 	tmpFile, err := os.CreateTemp("", "conan-graph-*.json")
 	if err != nil {
 		return "", fmt.Errorf("cannot create temp file: %w", err)
@@ -182,11 +247,9 @@ func (s *ConanGraphStrategy) runConanLocally(projectRoot string, verbose bool) (
 	tmpFile.Close()
 
 	if verbose {
-		fmt.Printf("  [conan-graph] Running: %s graph info %s --format=json\n", conanBin, projectRoot)
+		fmt.Printf("  [conan-graph] Running: %s graph info %s --format=json\n", conanBin, conanfileDir)
 	}
 
-	// Run: conan graph info <projectRoot> --format=json -s build_type=Release
-	// stdout → temp file, stderr → our stderr (so the user sees progress)
 	outFile, err := os.Create(tmpPath)
 	if err != nil {
 		os.Remove(tmpPath)
@@ -194,14 +257,13 @@ func (s *ConanGraphStrategy) runConanLocally(projectRoot string, verbose bool) (
 	}
 
 	cmd := exec.Command(conanBin,
-		"graph", "info", projectRoot,
+		"graph", "info", conanfileDir,
 		"--format=json",
 		"-s", "build_type=Release",
 	)
 	cmd.Stdout = outFile
 	cmd.Stderr = os.Stderr
 
-	// Give it up to 5 minutes (first run may download recipes)
 	done := make(chan error, 1)
 	go func() { done <- cmd.Run() }()
 
@@ -210,13 +272,13 @@ func (s *ConanGraphStrategy) runConanLocally(projectRoot string, verbose bool) (
 		outFile.Close()
 		if runErr != nil {
 			os.Remove(tmpPath)
-			return "", fmt.Errorf("conan graph info failed: %w", runErr)
+			return "", fmt.Errorf("conan graph info failed in %s: %w", conanfileDir, runErr)
 		}
 	case <-time.After(5 * time.Minute):
 		cmd.Process.Kill()
 		outFile.Close()
 		os.Remove(tmpPath)
-		return "", fmt.Errorf("conan graph info timed out after 5 minutes")
+		return "", fmt.Errorf("conan graph info timed out after 5 minutes (dir: %s)", conanfileDir)
 	}
 
 	if verbose {
@@ -256,7 +318,7 @@ func parseConanGraphJSON(data []byte) *ConanScanResult {
 	for id, node := range nodes {
 		// Node "0" is the project root (Consumer) — not a real package
 		if id == "0" || node.Name == "" {
-			// But its dependencies tell us which packages are DIRECT
+			// Its dependencies tell us which packages are DIRECT
 			for childID, edge := range node.Dependencies {
 				if edge.Direct {
 					if childName := idToName[childID]; childName != "" {
@@ -267,7 +329,6 @@ func parseConanGraphJSON(data []byte) *ConanScanResult {
 			continue
 		}
 
-		// Build the Component
 		c := &model.Component{
 			Name:            node.Name,
 			Version:         node.Version,
@@ -276,13 +337,10 @@ func parseConanGraphJSON(data []byte) *ConanScanResult {
 			Description:     node.Description,
 		}
 
-		// License: may be a string or []string
-		c.Description = node.Description
 		if node.Homepage != "" && c.Description == "" {
 			c.Description = node.Homepage
 		}
 
-		// Build PURL
 		c.PURL = "pkg:conan/" + node.Name + "@" + node.Version
 		if node.Rrev != "" {
 			c.PURL += "?rrev=" + node.Rrev
@@ -290,10 +348,8 @@ func parseConanGraphJSON(data []byte) *ConanScanResult {
 
 		result.Components = append(result.Components, c)
 
-		// Build edges: this node → its children
+		// Build edges: this node → its children (skip build-tool edges)
 		for childID, edge := range node.Dependencies {
-			// Skip build-tool edges (cmake, nasm, etc.) from the edge graph
-			// but still include the build tools themselves as components
 			if edge.Build {
 				continue
 			}

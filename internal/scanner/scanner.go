@@ -30,14 +30,13 @@ type Scanner struct {
 	ProjectRoot string
 	Verbose     bool
 
-	// ConanGraph enables the conan-graph strategy.
-	// When true the strategy will look for an existing graph.json first;
-	// if none is found it runs conan inside Docker.
+	// ConanGraph enables the conan-graph strategy active mode.
+	// When true the strategy walks the project tree for conanfile.py/txt files
+	// and runs `conan graph info <dir> --format=json` for each one (conan must
+	// be on PATH — it is pre-installed in the cpp-sbom-builder Docker image).
+	// In passive mode (false) the strategy still parses any graph.json files
+	// found anywhere in the project tree.
 	ConanGraph bool
-
-	// ConanDockerImage overrides the Docker image used for conan graph info.
-	// Defaults to "conanio/conan:latest".
-	ConanDockerImage string
 
 	// CMakeConfigure enables the cmake-configure strategy.
 	// When true the strategy runs cmake configure-only to generate
@@ -72,8 +71,7 @@ func (s *Scanner) Scan() (*Result, error) {
 	// ConanGraphStrategy: runs first if --conan-graph is set or a graph.json exists.
 	// It supersedes the plain ConanStrategy when it produces results.
 	conanGraphStrat := &strategies.ConanGraphStrategy{
-		UseDocker:   s.ConanGraph,
-		DockerImage: s.ConanDockerImage,
+		RunConan: s.ConanGraph,
 	}
 	conanGraphFullResult := conanGraphStrat.ScanWithGraph(s.ProjectRoot, s.Verbose)
 

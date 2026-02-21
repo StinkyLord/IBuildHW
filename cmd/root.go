@@ -20,7 +20,6 @@ var (
 	flagVerbose        bool
 	flagShowStrategies bool
 	flagConanGraph     bool
-	flagConanImage     string
 	flagCMakeConfigure bool
 	flagLdd            bool
 )
@@ -62,12 +61,11 @@ func init() {
 	scanCmd.Flags().BoolVarP(&flagVerbose, "verbose", "v", false, "Enable verbose output")
 	scanCmd.Flags().BoolVar(&flagShowStrategies, "show-strategies", false, "Print which strategies fired after scanning")
 	scanCmd.Flags().BoolVar(&flagConanGraph, "conan-graph", false,
-		"Run 'conan graph info' inside Docker to resolve the full Conan dependency tree.\n"+
-			"Requires Docker on the host. The project dir is mounted read-only; nothing is\n"+
-			"installed on the customer's machine. If a graph.json already exists in the\n"+
-			"project root it is used directly without running Docker.")
-	scanCmd.Flags().StringVar(&flagConanImage, "conan-image", "conanio/conan:latest",
-		"Docker image to use when --conan-graph is set (must have conan pre-installed)")
+		"Walk the project tree for conanfile.py/txt files (at any depth) and run\n"+
+			"'conan graph info <dir> --format=json' for each one.\n"+
+			"Conan must be on PATH (pre-installed in the cpp-sbom-builder Docker image).\n"+
+			"In passive mode (without this flag) any graph.json files already present\n"+
+			"in the project tree are still parsed automatically.")
 	scanCmd.Flags().BoolVar(&flagCMakeConfigure, "cmake-configure", false,
 		"Run cmake configure-only step to generate compile_commands.json and link.txt files.\n"+
 			"Requires cmake on the host (or use inside the Docker image).\n"+
@@ -107,7 +105,6 @@ func runScan(cmd *cobra.Command, args []string) error {
 
 	s := scanner.New(absDir, flagVerbose)
 	s.ConanGraph = flagConanGraph
-	s.ConanDockerImage = flagConanImage
 	s.CMakeConfigure = flagCMakeConfigure
 	s.UseLdd = flagLdd
 	result, err := s.Scan()

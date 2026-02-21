@@ -703,7 +703,7 @@ func TestConanGraph_DetectionSource(t *testing.T) {
 func TestConanGraph_PassiveMode_FindsExistingFile(t *testing.T) {
 	// The testdata/strategies directory has a graph.json — passive mode should find it
 	dir := testdataDir()
-	strat := &ConanGraphStrategy{UseDocker: false}
+	strat := &ConanGraphStrategy{RunConan: false}
 	result := strat.ScanWithGraph(dir, false)
 
 	if len(result.Components) == 0 {
