@@ -15,20 +15,42 @@ import (
 // ---- CycloneDX 1.4 JSON schema types ----
 
 type cdxBOM struct {
-	BOMFormat       string              `json:"bomFormat"`
-	SpecVersion     string              `json:"specVersion"`
-	Version         int                 `json:"version"`
-	SerialNumber    string              `json:"serialNumber"`
-	Metadata        cdxMetadata         `json:"metadata"`
-	Components      []cdxComponent      `json:"components"`
-	Dependencies    []cdxDependency     `json:"dependencies,omitempty"`
-	HierarchyLevels []cdxHierarchyLevel `json:"x-hierarchyLevels,omitempty"`
+	BOMFormat      string          `json:"bomFormat"`
+	SpecVersion    string          `json:"specVersion"`
+	Version        int             `json:"version"`
+	SerialNumber   string          `json:"serialNumber"`
+	Metadata       cdxMetadata     `json:"metadata"`
+	Components     []cdxComponent  `json:"components"`
+	Dependencies   []cdxDependency `json:"dependencies,omitempty"`
+	DependencyTree []*cdxTreeNode  `json:"x-dependencyTree,omitempty"`
 }
 
-type cdxHierarchyLevel struct {
-	Level      int      `json:"level"`
-	Label      string   `json:"label"` // human-readable: "Direct", "Level 1", etc.
-	Components []string `json:"components"`
+// cdxTreeNode is a recursive tree node for the x-dependencyTree extension.
+// Only direct dependencies appear at the root; each node carries its full
+// subtree of children inline — npm package-lock.json style.
+//
+// Example:
+//
+//	[
+//	  { "name":"X", "version":"1", "children": [
+//	      { "name":"A", "version":"1", "children": [
+//	          { "name":"B", "version":"1" }
+//	      ]}
+//	  ]},
+//	  { "name":"Y", "version":"1", "children": [
+//	      { "name":"C", "version":"1", "children": [
+//	          { "name":"A", "version":"1", "children": [
+//	              { "name":"B", "version":"1" }
+//	          ]}
+//	      ]}
+//	  ]}
+//	]
+type cdxTreeNode struct {
+	Name     string         `json:"name"`
+	Version  string         `json:"version"`
+	PURL     string         `json:"purl,omitempty"`
+	Direct   bool           `json:"direct,omitempty"`
+	Children []*cdxTreeNode `json:"children,omitempty"`
 }
 
 type cdxMetadata struct {
@@ -178,24 +200,12 @@ func buildCycloneDX(result *scanner.Result, toolVersion string) cdxBOM {
 		return cdxDeps[i].Ref < cdxDeps[j].Ref
 	})
 
-	// Build the x-hierarchyLevels extension from the BFS tree
-	var hierarchyLevels []cdxHierarchyLevel
-	if result.DependencyTree != nil && len(result.DependencyTree.Levels) > 0 {
-		for _, level := range result.DependencyTree.Levels {
-			label := levelLabel(level.Depth)
-			var levelPURLs []string
-			for _, c := range level.Components {
-				ref := c.PURL
-				if ref == "" {
-					ref = "pkg:generic/" + c.Name
-				}
-				levelPURLs = append(levelPURLs, ref)
-			}
-			hierarchyLevels = append(hierarchyLevels, cdxHierarchyLevel{
-				Level:      level.Depth,
-				Label:      label,
-				Components: levelPURLs,
-			})
+	// Build the x-dependencyTree extension: recursive npm-style tree.
+	// Only direct dependencies appear at the root; each carries its full subtree.
+	var depTree []*cdxTreeNode
+	if result.DependencyTree != nil && len(result.DependencyTree.Roots) > 0 {
+		for _, root := range result.DependencyTree.Roots {
+			depTree = append(depTree, modelNodeToCDX(root))
 		}
 	}
 
@@ -214,20 +224,24 @@ func buildCycloneDX(result *scanner.Result, toolVersion string) cdxBOM {
 				},
 			},
 		},
-		Components:      cdxComps,
-		Dependencies:    cdxDeps,
-		HierarchyLevels: hierarchyLevels,
+		Components:     cdxComps,
+		Dependencies:   cdxDeps,
+		DependencyTree: depTree,
 	}
 }
 
-// levelLabel returns a human-readable label for a BFS depth level.
-// Level 0 is always "Direct". All deeper levels are described generically
-// so the function works correctly for any graph depth.
-func levelLabel(depth int) string {
-	if depth == 0 {
-		return "Direct"
+// modelNodeToCDX converts a model.TreeNode to a cdxTreeNode recursively.
+func modelNodeToCDX(n *model.TreeNode) *cdxTreeNode {
+	node := &cdxTreeNode{
+		Name:    n.Name,
+		Version: n.Version,
+		PURL:    n.PURL,
+		Direct:  n.IsDirect,
 	}
-	return fmt.Sprintf("Level %d (transitive)", depth)
+	for _, child := range n.Children {
+		node.Children = append(node.Children, modelNodeToCDX(child))
+	}
+	return node
 }
 
 // generateURN produces a simple URN:UUID using the current time.

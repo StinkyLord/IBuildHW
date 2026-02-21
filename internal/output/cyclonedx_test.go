@@ -328,13 +328,17 @@ func TestDependencyTree(t *testing.T) {
 	}
 }
 
-// TestHierarchyLevels verifies the BFS level-by-level hierarchy tree.
+// TestRecursiveTree verifies the npm-style recursive dependency tree model.
 //
 // Graph:
 //
-//	Level 0 (direct): boost, nlohmann-json, openssl
-//	Level 1 (children of direct): zlib  (openssl → zlib)
-func TestHierarchyLevels(t *testing.T) {
+//	boost    (direct, no children)
+//	openssl  (direct) → zlib (transitive)
+//	nlohmann (direct, no children)
+//
+// Expected Roots (sorted): boost, nlohmann-json, openssl
+// openssl.Children must contain zlib with its own (empty) children.
+func TestRecursiveTree(t *testing.T) {
 	result := makeTestResult()
 	tree := result.DependencyTree
 
@@ -342,43 +346,53 @@ func TestHierarchyLevels(t *testing.T) {
 		t.Fatal("DependencyTree is nil")
 	}
 
-	// Must have exactly 2 levels: direct (0) and children (1)
-	if len(tree.Levels) != 2 {
-		t.Fatalf("Levels count = %d, want 2; levels = %v", len(tree.Levels), tree.Levels)
+	// Roots = direct deps only (3)
+	if len(tree.Roots) != 3 {
+		t.Fatalf("Roots count = %d, want 3", len(tree.Roots))
 	}
 
-	// Level 0: direct deps — boost, nlohmann-json, openssl (sorted)
-	level0 := tree.Levels[0]
-	if level0.Depth != 0 {
-		t.Errorf("Levels[0].Depth = %d, want 0", level0.Depth)
+	// Roots are sorted: boost, nlohmann-json, openssl
+	if tree.Roots[0].Name != "boost" {
+		t.Errorf("Roots[0].Name = %q, want boost", tree.Roots[0].Name)
 	}
-	if len(level0.Components) != 3 {
-		t.Errorf("Level 0 component count = %d, want 3", len(level0.Components))
+	if tree.Roots[1].Name != "nlohmann-json" {
+		t.Errorf("Roots[1].Name = %q, want nlohmann-json", tree.Roots[1].Name)
 	}
-	names0 := make([]string, len(level0.Components))
-	for i, c := range level0.Components {
-		names0[i] = c.Name
-	}
-	// Should be sorted: boost, nlohmann-json, openssl
-	if names0[0] != "boost" || names0[1] != "nlohmann-json" || names0[2] != "openssl" {
-		t.Errorf("Level 0 names = %v, want [boost nlohmann-json openssl]", names0)
+	if tree.Roots[2].Name != "openssl" {
+		t.Errorf("Roots[2].Name = %q, want openssl", tree.Roots[2].Name)
 	}
 
-	// Level 1: zlib (child of openssl)
-	level1 := tree.Levels[1]
-	if level1.Depth != 1 {
-		t.Errorf("Levels[1].Depth = %d, want 1", level1.Depth)
+	// boost has no children
+	if len(tree.Roots[0].Children) != 0 {
+		t.Errorf("boost.Children count = %d, want 0", len(tree.Roots[0].Children))
 	}
-	if len(level1.Components) != 1 {
-		t.Errorf("Level 1 component count = %d, want 1", len(level1.Components))
+
+	// openssl has one child: zlib
+	opensslNode := tree.Roots[2]
+	if len(opensslNode.Children) != 1 {
+		t.Fatalf("openssl.Children count = %d, want 1", len(opensslNode.Children))
 	}
-	if level1.Components[0].Name != "zlib" {
-		t.Errorf("Level 1 component = %q, want %q", level1.Components[0].Name, "zlib")
+	if opensslNode.Children[0].Name != "zlib" {
+		t.Errorf("openssl.Children[0].Name = %q, want zlib", opensslNode.Children[0].Name)
+	}
+
+	// zlib has no further children
+	if len(opensslNode.Children[0].Children) != 0 {
+		t.Errorf("zlib.Children count = %d, want 0", len(opensslNode.Children[0].Children))
+	}
+
+	// IsDirect flags
+	if !tree.Roots[0].IsDirect {
+		t.Error("boost root node should have IsDirect=true")
+	}
+	if tree.Roots[2].Children[0].IsDirect {
+		t.Error("zlib child node should have IsDirect=false")
 	}
 }
 
-// TestHierarchyLevelsInOutput verifies that x-hierarchyLevels appears in the JSON output.
-func TestHierarchyLevelsInOutput(t *testing.T) {
+// TestRecursiveTreeInOutput verifies that x-dependencyTree appears in the JSON output
+// and has the correct recursive structure.
+func TestRecursiveTreeInOutput(t *testing.T) {
 	result := makeTestResult()
 
 	tmp := filepath.Join(t.TempDir(), "sbom.json")
@@ -396,30 +410,37 @@ func TestHierarchyLevelsInOutput(t *testing.T) {
 		t.Fatalf("cannot unmarshal CycloneDX BOM: %v", err)
 	}
 
-	if len(bom.HierarchyLevels) == 0 {
-		t.Fatal("x-hierarchyLevels is empty")
+	// x-dependencyTree must be present with 3 roots (direct deps)
+	if len(bom.DependencyTree) != 3 {
+		t.Fatalf("x-dependencyTree root count = %d, want 3", len(bom.DependencyTree))
 	}
 
-	// Level 0 must be labelled "Direct"
-	if bom.HierarchyLevels[0].Label != "Direct" {
-		t.Errorf("HierarchyLevels[0].Label = %q, want %q", bom.HierarchyLevels[0].Label, "Direct")
+	// Find openssl root
+	var opensslNode *cdxTreeNode
+	for _, n := range bom.DependencyTree {
+		if n.Name == "openssl" {
+			opensslNode = n
+			break
+		}
+	}
+	if opensslNode == nil {
+		t.Fatal("openssl not found in x-dependencyTree roots")
 	}
 
-	// Level 0 must contain 3 PURLs (boost, nlohmann-json, openssl)
-	if len(bom.HierarchyLevels[0].Components) != 3 {
-		t.Errorf("HierarchyLevels[0] component count = %d, want 3", len(bom.HierarchyLevels[0].Components))
+	// openssl must have zlib as a child
+	if len(opensslNode.Children) != 1 {
+		t.Fatalf("openssl.children count = %d, want 1", len(opensslNode.Children))
+	}
+	if opensslNode.Children[0].Name != "zlib" {
+		t.Errorf("openssl.children[0].name = %q, want zlib", opensslNode.Children[0].Name)
+	}
+	if opensslNode.Children[0].Version != "1.2.13" {
+		t.Errorf("zlib child version = %q, want 1.2.13", opensslNode.Children[0].Version)
 	}
 
-	// Level 1 must contain zlib
-	if len(bom.HierarchyLevels) < 2 {
-		t.Fatal("expected at least 2 hierarchy levels")
-	}
-	if len(bom.HierarchyLevels[1].Components) != 1 {
-		t.Errorf("HierarchyLevels[1] component count = %d, want 1", len(bom.HierarchyLevels[1].Components))
-	}
-	if bom.HierarchyLevels[1].Components[0] != "pkg:conan/zlib@1.2.13" {
-		t.Errorf("HierarchyLevels[1].Components[0] = %q, want %q",
-			bom.HierarchyLevels[1].Components[0], "pkg:conan/zlib@1.2.13")
+	// zlib child must have no further children
+	if len(opensslNode.Children[0].Children) != 0 {
+		t.Errorf("zlib.children count = %d, want 0", len(opensslNode.Children[0].Children))
 	}
 }
 
