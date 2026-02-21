@@ -1,0 +1,107 @@
+# escape=`
+
+# =============================================================================
+# dockerFileWithBuild
+#
+# A Windows container that:
+#   1. Installs Visual Studio 2022 Build Tools (MSVC cl.exe + link.exe)
+#   2. Installs CMake
+#   3. Compiles the user's C++ project with MSVC, injecting /MAP so every
+#      linked target produces a .map file
+#   4. Runs cpp-sbom-builder to scan the source + build output and produce
+#      a CycloneDX 1.4 JSON SBOM
+#
+# REQUIREMENTS
+#   • Docker Desktop switched to Windows Containers mode
+#   • At least 2 GB RAM allocated to the build step (-m 2GB)
+#   • At least 30 GB free disk space for the image
+#
+# BUILD
+#   docker build -t cpp-sbom-builder-msvc:latest -m 2GB -f dockerFileWithBuild .
+#
+# RUN (PowerShell)
+#   docker run --rm `
+#     -v C:\path\to\your\cpp\project:C:\project:ro `
+#     -v ${PWD}:C:\output `
+#     cpp-sbom-builder-msvc:latest
+#
+# =============================================================================
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Stage 1: Build the cpp-sbom-builder binary using a Linux Go builder.
+#          We cross-compile for Windows (GOOS=windows) so the binary runs
+#          inside the Windows container in Stage 2.
+# ─────────────────────────────────────────────────────────────────────────────
+FROM golang:1.25-alpine AS go-builder
+
+WORKDIR /src
+
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY . .
+RUN CGO_ENABLED=0 GOOS=windows GOARCH=amd64 `
+    go build -ldflags="-s -w" -o /cpp-sbom-builder.exe .
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Stage 2: Windows container with MSVC Build Tools + CMake
+# ─────────────────────────────────────────────────────────────────────────────
+FROM mcr.microsoft.com/windows/servercore:ltsc2022
+
+LABEL org.opencontainers.image.title="cpp-sbom-builder-msvc" `
+      org.opencontainers.image.description="C++ SBOM builder — compiles with MSVC (generates .map files) then scans with cpp-sbom-builder" `
+      org.opencontainers.image.source="https://github.com/StinkyLord/IBuildHW" `
+      org.opencontainers.image.vendor="Philip Abed"
+
+# Use cmd for RUN instructions (required for Windows containers)
+SHELL ["cmd", "/S", "/C"]
+
+# ── Install Visual Studio 2022 Build Tools with the C++ workload ─────────────
+#
+# Microsoft.VisualStudio.Workload.VCTools includes:
+#   • cl.exe      — MSVC C/C++ compiler
+#   • link.exe    — MSVC linker (supports /MAP flag)
+#   • msbuild.exe — MSBuild
+#   • Windows SDK headers and libraries
+#
+# We exclude older Windows 10 SDKs that are known to fail inside containers.
+RUN curl -SL --output C:\vs_buildtools.exe https://aka.ms/vs/17/release/vs_buildtools.exe `
+    && (start /w C:\vs_buildtools.exe --quiet --wait --norestart --nocache `
+        --installPath "C:\BuildTools" `
+        --add Microsoft.VisualStudio.Workload.VCTools `
+        --add Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
+        --add Microsoft.VisualStudio.Component.Windows11SDK.22621 `
+        --remove Microsoft.VisualStudio.Component.Windows10SDK.10240 `
+        --remove Microsoft.VisualStudio.Component.Windows10SDK.10586 `
+        --remove Microsoft.VisualStudio.Component.Windows10SDK.14393 `
+        --remove Microsoft.VisualStudio.Component.Windows81SDK `
+        || IF "%ERRORLEVEL%"=="3010" EXIT 0) `
+    && del /q C:\vs_buildtools.exe
+
+# ── Install CMake ─────────────────────────────────────────────────────────────
+# Download the CMake Windows x64 ZIP, extract to C:\cmake, add to PATH.
+RUN curl -SL --output C:\cmake.zip https://github.com/Kitware/CMake/releases/download/v3.29.3/cmake-3.29.3-windows-x86_64.zip `
+    && powershell -Command "Expand-Archive -Path C:\cmake.zip -DestinationPath C:\ -Force" `
+    && ren C:\cmake-3.29.3-windows-x86_64 cmake `
+    && del /q C:\cmake.zip
+
+# Add CMake to the system PATH permanently
+RUN setx /M PATH "%PATH%;C:\cmake\bin"
+
+# ── Copy the cpp-sbom-builder binary ─────────────────────────────────────────
+COPY --from=go-builder /cpp-sbom-builder.exe C:\cpp-sbom-builder.exe
+
+# ── Copy the PowerShell entrypoint script ─────────────────────────────────────
+COPY docker-entrypoint-build.ps1 C:\docker-entrypoint-build.ps1
+
+# ── Volumes ───────────────────────────────────────────────────────────────────
+# C:\project  — mount your C++ source here (read-only recommended)
+# C:\output   — SBOM JSON is written here
+VOLUME ["C:\\project", "C:\\output"]
+
+# ── Entry point ───────────────────────────────────────────────────────────────
+# VsDevCmd.bat sets up the MSVC environment (PATH, INCLUDE, LIB, etc.)
+# then hands off to our PowerShell entrypoint script.
+ENTRYPOINT ["C:\\BuildTools\\Common7\\Tools\\VsDevCmd.bat", "-arch=amd64", "&&", `
+            "powershell.exe", "-NoLogo", "-ExecutionPolicy", "Bypass", `
+            "-File", "C:\\docker-entrypoint-build.ps1"]
