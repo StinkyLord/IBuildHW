@@ -10,12 +10,12 @@
 //   - License, description, homepage metadata
 //   - Build-tool vs. runtime classification
 //
-// The strategy can operate in two modes:
-//  1. Passive  — a graph.json already exists in the project dir (user pre-ran the command)
-//  2. Active   — the tool runs conan inside a Docker container and captures the output
-//
-// Active mode is triggered by the --conan-graph flag and requires Docker on the host.
-// It never installs anything on the customer's machine.
+// The strategy operates in two modes:
+//  1. Passive — a graph.json already exists in the project dir (user pre-ran the command).
+//     This is the zero-effort path: just drop graph.json in the project root.
+//  2. Active  — triggered by --conan-graph flag. Runs `conan graph info` as a local
+//     process. Conan is pre-installed in the cpp-sbom-builder Docker image, so this
+//     works out of the box when running inside the container. No Docker-in-Docker needed.
 package strategies
 
 import (
@@ -24,8 +24,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
-	"strings"
 	"time"
 
 	"github.com/StinkyLord/cpp-sbom-builder/internal/model"
@@ -75,12 +73,15 @@ type conanGraphEdge struct {
 // It produces a fully resolved dependency tree with direct/transitive edges,
 // license metadata, and build-tool classification.
 type ConanGraphStrategy struct {
-	// UseDocker controls whether to run conan inside a Docker container.
-	// When false the strategy only parses an existing graph.json file.
+	// UseDocker (--conan-graph flag) triggers active mode: runs `conan graph info`
+	// as a local process. Conan must be on PATH — it is pre-installed in the
+	// cpp-sbom-builder Docker image. No Docker-in-Docker is required.
+	// When false, the strategy only parses an existing graph.json file.
 	UseDocker bool
 
-	// DockerImage is the Docker image that has conan pre-installed.
-	// Defaults to "conanio/conan:latest".
+	// DockerImage is kept for API compatibility but is no longer used.
+	// Previously the strategy tried to spin up a Docker container; now it runs
+	// conan directly as a local process inside the pre-built image.
 	DockerImage string
 }
 
@@ -125,7 +126,8 @@ func (s *ConanGraphStrategy) ScanWithGraph(projectRoot string, verbose bool) *Co
 // resolveGraphJSON returns the path to a graph.json to parse.
 // Priority:
 //  1. graph.json already exists in the project root → use it directly
-//  2. UseDocker is true → run conan inside Docker, capture output to a temp file
+//  2. UseDocker (--conan-graph flag) is true → run conan locally (conan is
+//     pre-installed in the Docker image that wraps this binary)
 //  3. Otherwise → return an error (no graph.json available)
 func (s *ConanGraphStrategy) resolveGraphJSON(projectRoot string, verbose bool) (string, error) {
 	// 1. Passive mode: look for an existing graph.json
@@ -143,116 +145,84 @@ func (s *ConanGraphStrategy) resolveGraphJSON(projectRoot string, verbose bool) 
 		}
 	}
 
-	// 2. Active mode: run conan inside Docker
+	// 2. Active mode: run conan directly (it is pre-installed in the Docker image)
 	if s.UseDocker {
-		return s.runConanInDocker(projectRoot, verbose)
+		return s.runConanLocally(projectRoot, verbose)
 	}
 
 	return "", fmt.Errorf("no graph.json found and --conan-graph not set")
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Docker runner
+// Local conan runner
 // ─────────────────────────────────────────────────────────────────────────────
 
-const defaultDockerImage = "conanio/conan:latest"
-
-// runConanInDocker runs `conan graph info . --format=json` inside a Docker
-// container that has Conan pre-installed. The project directory is mounted
-// read-only; the output is written to a temp file on the host.
+// runConanLocally runs `conan graph info . --format=json` as a local process.
 //
-// Nothing is installed on the customer's machine — Docker must already be
-// available (it is a standard developer tool).
-func (s *ConanGraphStrategy) runConanInDocker(projectRoot string, verbose bool) (string, error) {
-	image := s.DockerImage
-	if image == "" {
-		image = defaultDockerImage
+// This is designed to run inside the cpp-sbom-builder Docker image where conan
+// is pre-installed. It does NOT require Docker-in-Docker.
+//
+// The DockerImage field is ignored in this mode (it was only relevant when the
+// tool tried to spin up its own container, which is no longer the approach).
+func (s *ConanGraphStrategy) runConanLocally(projectRoot string, verbose bool) (string, error) {
+	// Ensure conan is available on PATH
+	conanBin, err := exec.LookPath("conan")
+	if err != nil {
+		return "", fmt.Errorf("conan not found on PATH — " +
+			"run inside the cpp-sbom-builder Docker image (philip-abed-docker/cpp-sbom-builder) " +
+			"or pre-generate graph.json with: conan graph info . --format=json > graph.json")
 	}
 
-	// Ensure Docker is available
-	if _, err := exec.LookPath("docker"); err != nil {
-		return "", fmt.Errorf("docker not found on PATH — install Docker or pre-generate graph.json manually")
-	}
-
-	// Create a temp file to receive the JSON output
+	// Write output to a temp file
 	tmpFile, err := os.CreateTemp("", "conan-graph-*.json")
 	if err != nil {
 		return "", fmt.Errorf("cannot create temp file: %w", err)
 	}
-	tmpFile.Close()
 	tmpPath := tmpFile.Name()
-
-	// Normalise the project root path for Docker volume mounting.
-	// On Windows, convert C:\path\to\dir → /c/path/to/dir (Git-bash / Docker Desktop style)
-	mountSrc := toDockerPath(projectRoot)
-
-	// The container writes graph.json to /output/graph.json which is mapped to
-	// a host temp directory.
-	tmpDir := filepath.Dir(tmpPath)
-	outputMount := toDockerPath(tmpDir)
-
-	// Build the docker run command:
-	//   docker run --rm
-	//     -v <projectRoot>:/project:ro
-	//     -v <tmpDir>:/output
-	//     -w /project
-	//     <image>
-	//     bash -c "conan graph info . --format=json > /output/graph.json"
-	args := []string{
-		"run", "--rm",
-		"-v", mountSrc + ":/project:ro",
-		"-v", outputMount + ":/output",
-		"-w", "/project",
-		image,
-		"bash", "-c",
-		"conan graph info . --format=json > /output/" + filepath.Base(tmpPath),
-	}
+	tmpFile.Close()
 
 	if verbose {
-		fmt.Printf("  [conan-graph] Running: docker %s\n", strings.Join(args, " "))
+		fmt.Printf("  [conan-graph] Running: %s graph info %s --format=json\n", conanBin, projectRoot)
 	}
 
-	cmd := exec.Command("docker", args...)
-	cmd.Stdout = os.Stderr // progress to stderr
+	// Run: conan graph info <projectRoot> --format=json -s build_type=Release
+	// stdout → temp file, stderr → our stderr (so the user sees progress)
+	outFile, err := os.Create(tmpPath)
+	if err != nil {
+		os.Remove(tmpPath)
+		return "", fmt.Errorf("cannot open temp file for writing: %w", err)
+	}
+
+	cmd := exec.Command(conanBin,
+		"graph", "info", projectRoot,
+		"--format=json",
+		"-s", "build_type=Release",
+	)
+	cmd.Stdout = outFile
 	cmd.Stderr = os.Stderr
 
-	// Give it up to 5 minutes (first run pulls the image)
+	// Give it up to 5 minutes (first run may download recipes)
 	done := make(chan error, 1)
 	go func() { done <- cmd.Run() }()
 
 	select {
-	case err := <-done:
-		if err != nil {
+	case runErr := <-done:
+		outFile.Close()
+		if runErr != nil {
 			os.Remove(tmpPath)
-			return "", fmt.Errorf("docker conan graph info failed: %w", err)
+			return "", fmt.Errorf("conan graph info failed: %w", runErr)
 		}
 	case <-time.After(5 * time.Minute):
 		cmd.Process.Kill()
+		outFile.Close()
 		os.Remove(tmpPath)
-		return "", fmt.Errorf("docker conan graph info timed out after 5 minutes")
+		return "", fmt.Errorf("conan graph info timed out after 5 minutes")
 	}
 
 	if verbose {
 		fmt.Printf("  [conan-graph] graph.json written to %s\n", tmpPath)
 	}
 	return tmpPath, nil
-}
-
-// toDockerPath converts a host path to a Docker-compatible mount path.
-// On Windows: C:\Users\foo → /c/Users/foo
-// On Linux/Mac: unchanged.
-func toDockerPath(p string) string {
-	if runtime.GOOS != "windows" {
-		return p
-	}
-	// Replace backslashes with forward slashes
-	p = filepath.ToSlash(p)
-	// Convert drive letter: C:/... → /c/...
-	if len(p) >= 2 && p[1] == ':' {
-		drive := strings.ToLower(string(p[0]))
-		p = "/" + drive + p[2:]
-	}
-	return p
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

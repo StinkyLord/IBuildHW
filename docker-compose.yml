@@ -17,9 +17,9 @@ services:
   sbom-builder:
     image: philip-abed-docker/cpp-sbom-builder:latest
     # Build locally if the image is not yet on DockerHub:
-    # build:
-    #   context: .
-    #   dockerfile: Dockerfile
+    build:
+      context: .
+      dockerfile: Dockerfile
 
     volumes:
       # Mount the C++ project read-only (default: current directory)

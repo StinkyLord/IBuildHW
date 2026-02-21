@@ -105,14 +105,14 @@ Your project directory is mounted **read-only**. Nothing is installed on your ma
 ### Quick start
 
 ```bash
-# Pull the image
-docker pull philip-abed-docker/cpp-sbom-builder:latest
+# build the image using docker
+docker build -t philip/cpp-sbom-builder:latest .
 
 # Scan a project — output goes to ./sbom.json
 docker run --rm \
   -v /path/to/my/cpp/project:/project:ro \
   -v $(pwd):/output \
-  philip-abed-docker/cpp-sbom-builder:latest \
+  philip/cpp-sbom-builder:latest \
   scan --dir /project --output /output/sbom.json
 ```
 
@@ -121,8 +121,8 @@ On Windows (PowerShell):
 docker run --rm `
   -v C:\path\to\my\project:/project:ro `
   -v ${PWD}:/output `
-  philip-abed-docker/cpp-sbom-builder:latest `
-  scan --dir /project --output /output/sbom.json
+  philip/cpp-sbom-builder:latest `
+  scan --conan-graph --verbose --dir /project --output /output/sbom.json
 ```
 
 ### With Conan graph resolution
@@ -131,7 +131,7 @@ docker run --rm `
 docker run --rm \
   -v /path/to/my/project:/project:ro \
   -v $(pwd):/output \
-  philip-abed-docker/cpp-sbom-builder:latest \
+  philip/cpp-sbom-builder:latest \
   scan --dir /project --conan-graph --output /output/sbom.json
 ```
 
@@ -146,7 +146,7 @@ When `--conan-graph` is passed, the entrypoint automatically:
 docker run --rm \
   -v /path/to/my/project:/project:ro \
   -v $(pwd):/output \
-  philip-abed-docker/cpp-sbom-builder:latest \
+  philip/cpp-sbom-builder:latest \
   scan --dir /project --cmake-configure --output /output/sbom.json
 ```
 
@@ -166,7 +166,7 @@ The `link.txt` files are the **closest equivalent to linker MAP files** that can
 docker run --rm \
   -v /path/to/my/project:/project:ro \
   -v $(pwd):/output \
-  philip-abed-docker/cpp-sbom-builder:latest \
+  philip/cpp-sbom-builder:latest \
   scan --dir /project --ldd --output /output/sbom.json
 ```
 
@@ -178,7 +178,7 @@ When `--ldd` is passed, the entrypoint runs `ldd` on every `.so` file found in t
 docker run --rm \
   -v /path/to/my/project:/project:ro \
   -v $(pwd):/output \
-  philip-abed-docker/cpp-sbom-builder:latest \
+  philip/cpp-sbom-builder:latest \
   scan --dir /project \
        --conan-graph \
        --cmake-configure \
@@ -220,7 +220,7 @@ docker compose run --rm sbom-builder
 ```bash
 git clone https://github.com/StinkyLord/IBuildHW.git
 cd IBuildHW
-docker build -t philip-abed-docker/cpp-sbom-builder:latest .
+docker build -t philip/cpp-sbom-builder:latest .
 ```
 
 ---
