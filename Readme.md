@@ -119,7 +119,7 @@ you can run `conan graph info . --format=json > graph.json` to avoid running the
 i avoided building the project myself as every project has specific configurations to build correctly.
 3. If you have everything installed on your machine and you built your project, you can run the executable, .
 
-Tthe flags runing here are just an example. see what they do and decide what suits your project best
+The flags runing here are just an example. see what they do and decide what suits your project best
 ```bash
 ./${Executable} scan --dir 'D:\github\toDelete\ASM-Snippet-Univeristy' --conan-graph --cmake-configure --ldd --show-strategies --verbose
 ```
