@@ -62,7 +62,7 @@ C++ Project Directory
   CycloneDX 1.4 JSON SBOM
 ```
 
-All strategies run **concurrently**. Results are merged and deduplicated by library name, with higher-confidence sources (package manager manifests > compiler artifacts > header scan) winning on version information.
+All strategies run **concurrently**. Results are merged and deduplicated by library name, with higher-confidence sources (package manager manifests > compiler artifacts > header scan) priority on version information.
 
 ---
 
@@ -88,21 +88,50 @@ The Docker image contains **all required tools pre-installed** — Python, Conan
 
 Your project directory is mounted **read-only**. Nothing is installed on your machine.
 
-### Build the image
+### Prerequisites
 
+- [Go 1.25+](https://go.dev/dl/)
+- If you want to use docker, Docker engine
+- if you want better conan results. have conan installed and add --conan-graph or run the command `conan graph info . --format=json > graph.json`
+- Build the project to create Linker .map files.
+
+### Build the image locally
+
+I avoided creating a dockerhub public image for this project.
+
+to build image
 ```bash
 git clone https://github.com/StinkyLord/IBuildHW.git
 cd IBuildHW
+#docker image
 docker build -t philip/cpp-sbom-builder:latest .
+#executable
+go build
 ```
+
+for simplicity i avoided creating an executable for windows, linux, and mac and put them on github release.
 
 ### Run (Linux / macOS)
 
+Notes for performance:
+1. --conan-graph will run a commandline to get dependency graph from conan.
+you can run `conan graph info . --format=json > graph.json` to avoid running the command through the cli tool.
+2. Build your project before you mount and run. it will create linker map files which will give better results.
+i avoided building the project myself as every project has specific configurations to build correctly.
+3. If you have everything installed on your machine and you built your project, you can run the executable, .
+
+Tthe flags runing here are just an example. see what they do and decide what suits your project best
+```bash
+./${Executable} scan --dir 'D:\github\toDelete\ASM-Snippet-Univeristy' --conan-graph --cmake-configure --ldd --show-strategies --verbose
+```
+
+If you choose to run on docker
+
 ```bash
 docker run --rm \
-  -v /path/to/my/cpp/project:/project:ro \
+  -v ${/path/to/my/cpp/project}:/project:ro \
   -v $(pwd):/output \
-  philip/cpp-sbom-builder:latest \
+  ${image}:${tag} \
   scan --dir /project --conan-graph --cmake-configure --ldd --output /output/sbom.json --show-strategies --verbose
 ```
 
@@ -110,7 +139,7 @@ docker run --rm \
 
 ```powershell
 docker run --rm `
-  -v D:\path\to\my\cpp\project:/project:ro `
+  -v ${D:\path\to\my\cpp\project}:/project:ro `
   -v ${PWD}:/output `
   philip/cpp-sbom-builder:latest `
   scan --dir /project --conan-graph --cmake-configure --ldd --output /output/sbom.json --show-strategies --verbose
@@ -128,212 +157,8 @@ docker run --rm `
 | `--show-strategies` | `false` | Print strategy summary after scan |
 | `--verbose` | `false` | Verbose logging |
 
----
 
-## Running with Docker + MSVC Build (Windows Containers)
+### Ideas
 
-Use `dockerFileWithBuild` when you want the container to **fully compile your C++ project with the real MSVC toolchain** and generate `.map` files before scanning. This gives the `LinkerMapStrategy` the richest possible input — every library that was actually linked into your binary is recorded in the `.map` file.
-
-### How it works
-
-```
-Your C++ source (C:\project — read-only mount)
-        │
-        ▼
-┌─────────────────────────────────────────────────────────────┐
-│              Windows Container (MSVC Build Tools)           │
-│                                                             │
-│  Step 1 — cmake configure                                   │
-│    • Generates compile_commands.json                        │
-│    • Injects /MAP into linker flags for all targets         │
-│                                                             │
-│  Step 2 — cmake build (cl.exe + link.exe)                   │
-│    • Fully compiles the project                             │
-│    • link.exe /MAP writes <target>.map next to each .exe    │
-│      The .map lists every .lib that was linked in           │
-│                                                             │
-│  Step 3 — cpp-sbom-builder scan                             │
-│    • Scans C:\project (source) + C:\build (artifacts)       │
-│    • LinkerMapStrategy reads the .map files                 │
-│    • All other strategies run concurrently                  │
-│    • Writes sbom.json to C:\output                          │
-└─────────────────────────────────────────────────────────────┘
-        │
-        ▼
-  C:\output\sbom.json  (CycloneDX 1.4 JSON)
-```
-
-### Prerequisites
-
-> ⚠️ **Windows Containers mode required.**
-> In Docker Desktop, go to **Settings → General** and switch to **Windows containers** (or right-click the Docker tray icon and choose *Switch to Windows containers*). This container cannot run in Linux containers mode.
-
-- Docker Desktop on Windows with **Windows containers** mode enabled
-- At least **2 GB** of memory allocated to Docker for the build step
-- At least **30 GB** of free disk space (the VS Build Tools image is large)
-
-### Step 1 — Build the image
-
-Open a **PowerShell** or **Command Prompt** window in the repository root:
-
-```powershell
-docker build -t cpp-sbom-builder-msvc:latest -m 2GB -f dockerFileWithBuild .
-```
-
-> The first build takes **10–20 minutes** — it downloads and installs Visual Studio 2022 Build Tools and CMake inside the image. Subsequent builds are fast thanks to Docker layer caching.
-
-### Step 2 — Run the container
-
-```powershell
-docker run --rm `
-  -v C:\path\to\your\cpp\project:C:\project:ro `
-  -v ${PWD}:C:\output `
-  cpp-sbom-builder-msvc:latest
-```
-
-The container will:
-1. Configure your project with CMake (MSVC generator, `/MAP` flag injected)
-2. Compile it with `cl.exe` / `link.exe`
-3. Scan the source + build output and write `sbom.json` to your current directory
-
-### Step 3 — Read the output
-
-```powershell
-# View the SBOM
-Get-Content .\sbom.json | ConvertFrom-Json | ConvertTo-Json -Depth 10
-```
-
-### Environment variables
-
-You can customise the build behaviour with `-e` flags:
-
-| Variable | Default | Description |
-|---|---|---|
-| `BUILD_CONFIG` | `Release` | CMake build configuration: `Release`, `Debug`, `RelWithDebInfo` |
-| `CMAKE_EXTRA_ARGS` | _(none)_ | Extra arguments passed to `cmake` configure, e.g. `-DSOME_OPTION=ON` |
-| `SBOM_VERBOSE` | `0` | Set to `1` for verbose output from both the build and the scanner |
-
-Example with environment variables:
-
-```powershell
-docker run --rm `
-  -v C:\path\to\your\cpp\project:C:\project:ro `
-  -v ${PWD}:C:\output `
-  -e BUILD_CONFIG=Debug `
-  -e SBOM_VERBOSE=1 `
-  cpp-sbom-builder-msvc:latest
-```
-
-### What the `.map` file gives you
-
-MSVC `link.exe /MAP` produces a file like this next to each compiled binary:
-
-```
- sample_app.exe
-
- Timestamp is 65A3F210 (Fri Jan 14 10:00:00 2025)
-
- Preferred load address is 00400000
-
- Start         Length     Name                   Class
- ...
-
- Address         Publics by Value              Rva+Base               Lib:Object
-
- 0001:00000000  _main                          00401000 f   sample_app.obj
- 0001:00000020  _some_func                     00401020 f   boost_system.lib:ops.obj
- 0001:00000080  _ssl_connect                   00401080 f   libssl.lib:ssl.obj
- ...
-```
-
-The `Lib:Object` column tells `cpp-sbom-builder` exactly which `.lib` files were linked — this is the highest-confidence signal for dependency detection.
-
-### Troubleshooting
-
-| Problem | Solution |
-|---|---|
-| `image operating system "windows" cannot be used on this platform` | Switch Docker Desktop to Windows containers mode |
-| `CMake configure failed` | Your project may need dependencies (Conan/vcpkg). Pass `-e CMAKE_EXTRA_ARGS="-DCMAKE_TOOLCHAIN_FILE=..."` |
-| `No .map files found` | Check that your `CMakeLists.txt` doesn't override `CMAKE_EXE_LINKER_FLAGS` |
-| Build takes very long | Normal on first run — VS Build Tools is ~5 GB. Use `docker build --no-cache` only if needed |
-| Out of disk space | Increase Docker Desktop disk image size to at least 60 GB in Settings → Resources |
-
----
-
-## Installation (Local Build)
-
-### Prerequisites
-
-- [Go 1.21+](https://go.dev/dl/)
-
-### Build from source
-
-```bash
-git clone https://github.com/StinkyLord/IBuildHW.git
-cd IBuildHW
-go build -o cpp-sbom-builder .
-```
-
-On Windows:
-```powershell
-go build -o cpp-sbom-builder.exe .
-```
-
----
-
-## Running Locally
-
-> **Note:** Some strategies (`--conan-graph`, `--cmake-configure`, `--ldd`) require the respective tools to be installed on your machine. The Docker image is the easiest way to get all of them.
-
-```bash
-# Basic scan
-./cpp-sbom-builder scan --dir /path/to/cpp/project
-
-# Full scan with all strategies
-./cpp-sbom-builder scan --dir /path/to/cpp/project \
-  --conan-graph --cmake-configure --ldd \
-  --output sbom.json --show-strategies --verbose
-
-# Print SBOM to stdout
-./cpp-sbom-builder scan --dir /path/to/cpp/project --output -
-```
-
----
-
-## Running the Test Suite
-
-```bash
-go test ./... -v
-```
-
----
-
-## Output Format
-
-The tool produces **CycloneDX 1.4 JSON**. Example:
-
-```json
-{
-  "bomFormat": "CycloneDX",
-  "specVersion": "1.4",
-  "version": 1,
-  "serialNumber": "urn:uuid:5f3a2b1c-...",
-  "metadata": {
-    "timestamp": "2026-02-20T13:00:00Z",
-    "tools": [{ "vendor": "StinkyLord", "name": "cpp-sbom-builder", "version": "1.0.0" }]
-  },
-  "components": [
-    {
-      "type": "library",
-      "name": "boost",
-      "version": "1.82.0",
-      "purl": "pkg:conan/boost@1.82.0",
-      "properties": [
-        { "name": "sbom:detectionSource", "value": "conan" }
-      ]
-    }
-  ]
-}
-```
-
-Each component includes `properties` recording **how** it was detected, which include paths triggered the detection, and which libraries were linked.
+1. Maybe we can build the project for the customer inside the docker to create the .map files if the customer provides how. 
+2. Maybe we can get MSVC container to run linker commands to create the .map files.

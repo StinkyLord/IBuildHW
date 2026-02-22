@@ -9,33 +9,6 @@ import (
 	"github.com/StinkyLord/cpp-sbom-builder/internal/scanner"
 )
 
-// WriteDependencyTree serialises the scan result as a pure dependency tree JSON
-// and writes it to the given output path. If outputPath is "-", it writes to stdout.
-//
-// The output is a JSON array of direct dependency nodes. Each node carries its
-// full component metadata (purl, version, detectionSource, includePaths, etc.)
-// plus a "children" array that recursively contains its transitive dependencies.
-//
-// Example output:
-//
-//	[
-//	  {
-//	    "name": "openssl",
-//	    "version": "3.1.4",
-//	    "purl": "pkg:conan/openssl@3.1.4",
-//	    "dependencyType": "direct",
-//	    "detectionSource": "conan",
-//	    "children": [
-//	      {
-//	        "name": "zlib",
-//	        "version": "1.2.13",
-//	        "purl": "pkg:conan/zlib@1.2.13",
-//	        "dependencyType": "transitive",
-//	        "detectionSource": "conan"
-//	      }
-//	    ]
-//	  }
-//	]
 func WriteDependencyTree(result *scanner.Result, outputPath string) error {
 	if result.DependencyTree == nil || len(result.DependencyTree.Roots) == 0 {
 		// Emit an empty array rather than null
