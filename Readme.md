@@ -82,7 +82,7 @@ All strategies run **concurrently**. Results are merged and deduplicated by libr
 
 ---
 
-## Running with Docker (Recommended)
+## Running with Docker
 
 The Docker image contains **all required tools pre-installed** — Python, Conan, CMake, GCC, Clang, binutils (`nm`, `objdump`, `readelf`, `ldd`) — so you need **nothing on your machine except Docker**.
 
@@ -95,9 +95,10 @@ Your project directory is mounted **read-only**. Nothing is installed on your ma
 - if you want better conan results. have conan installed and add --conan-graph or run the command `conan graph info . --format=json > graph.json`
 - Build the project to create Linker .map files.
 
-### Build the image locally
+### Build the executable or image locally
 
-I avoided creating a dockerhub public image for this project.
+For simplicity I avoided creating a dockerhub public image or executables for this project.
+also there will be no release or versioning.
 
 to build image
 ```bash
@@ -108,8 +109,6 @@ docker build -t philip/cpp-sbom-builder:latest .
 #executable
 go build
 ```
-
-for simplicity i avoided creating an executable for windows, linux, and mac and put them on github release.
 
 ### Run (Linux / macOS)
 
